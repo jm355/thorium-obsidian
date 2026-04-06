@@ -1,0 +1,96 @@
+/* Thorium EPUB Reader Plugin Styles */
+
+.thorium-epub-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* Toolbar */
+.thorium-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.thorium-btn {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--interactive-normal);
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.thorium-btn:hover {
+  background: var(--interactive-hover);
+}
+
+.thorium-chapter-title {
+  flex: 1;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 60px;
+}
+
+/* Content area */
+.thorium-content-wrapper {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+/* TOC sidebar */
+.thorium-toc-panel {
+  width: 260px;
+  min-width: 200px;
+  overflow-y: auto;
+  border-right: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  padding: 12px;
+  flex-shrink: 0;
+}
+
+.thorium-toc-entry {
+  padding: 4px 8px;
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-normal);
+  line-height: 1.4;
+}
+
+.thorium-toc-entry:hover {
+  background: var(--background-modifier-hover);
+}
+
+.thorium-toc-nested {
+  padding-left: 14px;
+}
+
+/* Reader iframe */
+.thorium-reader-frame {
+  flex: 1;
+  border: none;
+  width: 100%;
+  height: 100%;
+  background: white;
+}
+
+/* Dark theme override for the iframe background */
+.theme-dark .thorium-reader-frame {
+  background: #1e1e1e;
+}
