@@ -37,7 +37,3 @@ Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/p
 ## Advanced: Thorium Web Server
 
 If you run a self-hosted [Thorium Web](https://github.com/edrlab/thorium-web) instance with the Go Toolkit backend, you can point the plugin at it in Settings for the full Thorium Web experience (Web Publication Manifest support, advanced navigation, accessibility features).
-
-## License
-
-MIT
