@@ -2401,10 +2401,10 @@ __export(main_exports, {
   default: () => ThoriumReaderPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // epub-view.ts
-var import_obsidian = require("obsidian");
+var import_obsidian2 = require("obsidian");
 
 // epub-parser.ts
 var import_jszip = __toESM(require_jszip_min());
@@ -2521,21 +2521,186 @@ async function getChapterContent(epub, href) {
   return await file.async("text");
 }
 
+// annotations.ts
+var import_obsidian = require("obsidian");
+var ANNOTATION_FOLDER = "epub-annotations";
+var AnnotationManager = class {
+  app;
+  constructor(app) {
+    this.app = app;
+  }
+  /** Get the folder name for a given book (based on epub filename without extension) */
+  bookFolderName(bookFile) {
+    const basename = bookFile.split("/").pop() || bookFile;
+    return basename.replace(/\.epub$/i, "");
+  }
+  bookFolderPath(bookFile) {
+    return (0, import_obsidian.normalizePath)(`${ANNOTATION_FOLDER}/${this.bookFolderName(bookFile)}`);
+  }
+  /** Ensure the annotation folder exists */
+  async ensureFolder(path) {
+    const existing = this.app.vault.getAbstractFileByPath(path);
+    if (!existing) {
+      await this.app.vault.createFolder(path);
+    }
+  }
+  /** Generate a unique annotation filename */
+  annotationFileName(ann) {
+    const date = new Date(ann.created);
+    const ts = date.toISOString().replace(/[:.]/g, "-").replace("T", "_").substring(0, 19);
+    const slug = ann.selectedText.substring(0, 30).replace(/[^a-zA-Z0-9]/g, "_").replace(/_+/g, "_");
+    return `ch${ann.chapter}_${ts}_${slug}.md`;
+  }
+  /** Create a new annotation and save it as a markdown file */
+  async createAnnotation(params) {
+    const created = (/* @__PURE__ */ new Date()).toISOString();
+    const folderPath = this.bookFolderPath(params.bookFile);
+    await this.ensureFolder((0, import_obsidian.normalizePath)(ANNOTATION_FOLDER));
+    await this.ensureFolder(folderPath);
+    const fileName = this.annotationFileName({ ...params, created });
+    const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${fileName}`);
+    const id = filePath;
+    const frontmatter = [
+      "---",
+      `book: "${params.bookTitle}"`,
+      `bookFile: "${params.bookFile}"`,
+      `chapter: ${params.chapter}`,
+      `chapterTitle: "${params.chapterTitle.replace(/"/g, '\\"')}"`,
+      `color: "${params.color}"`,
+      `created: "${created}"`,
+      `selectedText: "${params.selectedText.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`,
+      `prefix: "${params.prefix.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`,
+      `suffix: "${params.suffix.replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`,
+      "---",
+      ""
+    ].join("\n");
+    const quote = `> ${params.selectedText.split("\n").join("\n> ")}
+`;
+    const body = params.note ? `
+${quote}
+${params.note}
+` : `
+${quote}
+`;
+    await this.app.vault.create(filePath, frontmatter + body);
+    return {
+      id,
+      filePath,
+      created,
+      ...params
+    };
+  }
+  /** Load all annotations for a given book */
+  async loadAnnotations(bookFile) {
+    const folderPath = this.bookFolderPath(bookFile);
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder || !(folder instanceof import_obsidian.TFolder)) return [];
+    const annotations = [];
+    for (const child of folder.children) {
+      if (!(child instanceof import_obsidian.TFile) || child.extension !== "md") continue;
+      try {
+        const content = await this.app.vault.read(child);
+        const ann = this.parseAnnotationFile(child.path, content);
+        if (ann && ann.bookFile === bookFile) {
+          annotations.push(ann);
+        }
+      } catch {
+      }
+    }
+    return annotations;
+  }
+  /** Load annotations for a specific chapter */
+  async loadChapterAnnotations(bookFile, chapter) {
+    const all = await this.loadAnnotations(bookFile);
+    return all.filter((a) => a.chapter === chapter);
+  }
+  /** Parse a markdown annotation file back into an Annotation */
+  parseAnnotationFile(filePath, content) {
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return null;
+    const fm = fmMatch[1];
+    const get = (key) => {
+      const m = fm.match(new RegExp(`^${key}:\\s*"?(.*?)"?\\s*$`, "m"));
+      return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") : "";
+    };
+    const getNum = (key) => {
+      const m = fm.match(new RegExp(`^${key}:\\s*(\\d+)`, "m"));
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    const afterFm = content.substring(fmMatch[0].length).trim();
+    const lines = afterFm.split("\n");
+    const noteLines = [];
+    let pastQuote = false;
+    for (const line of lines) {
+      if (!pastQuote && line.startsWith(">")) continue;
+      if (!pastQuote && line.trim() === "") {
+        pastQuote = true;
+        continue;
+      }
+      pastQuote = true;
+      noteLines.push(line);
+    }
+    const note = noteLines.join("\n").trim();
+    return {
+      id: filePath,
+      filePath,
+      bookFile: get("bookFile"),
+      bookTitle: get("book"),
+      chapter: getNum("chapter"),
+      chapterTitle: get("chapterTitle"),
+      selectedText: get("selectedText"),
+      prefix: get("prefix"),
+      suffix: get("suffix"),
+      color: get("color") || "yellow",
+      note,
+      created: get("created")
+    };
+  }
+  /** Update the note text of an existing annotation */
+  async updateAnnotationNote(annotation, newNote) {
+    const file = this.app.vault.getAbstractFileByPath(annotation.filePath);
+    if (!file || !(file instanceof import_obsidian.TFile)) return;
+    const content = await this.app.vault.read(file);
+    const fmMatch = content.match(/^---\n[\s\S]*?\n---/);
+    if (!fmMatch) return;
+    const quote = `> ${annotation.selectedText.split("\n").join("\n> ")}`;
+    const newContent = fmMatch[0] + "\n\n" + quote + "\n\n" + (newNote || "") + "\n";
+    await this.app.vault.modify(file, newContent);
+    annotation.note = newNote;
+  }
+  /** Delete an annotation and its file */
+  async deleteAnnotation(annotation) {
+    const file = this.app.vault.getAbstractFileByPath(annotation.filePath);
+    if (file && file instanceof import_obsidian.TFile) {
+      await this.app.vault.delete(file);
+    }
+    const folderPath = this.bookFolderPath(annotation.bookFile);
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (folder && folder instanceof import_obsidian.TFolder && folder.children.length === 0) {
+      await this.app.vault.delete(folder);
+    }
+  }
+};
+
 // epub-view.ts
 var EPUB_VIEW_TYPE = "thorium-epub-view";
-var EpubView = class extends import_obsidian.ItemView {
+var EpubView = class extends import_obsidian2.ItemView {
   plugin;
   epub = null;
   currentChapter = 0;
   filePath = "";
-  // DOM elements
   iframe = null;
   tocContainer = null;
   chapterTitle = null;
   tocVisible = false;
+  annotationMgr;
+  chapterAnnotations = [];
+  savePositionTimer = null;
+  pendingRestore = null;
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
+    this.annotationMgr = new AnnotationManager(this.app);
   }
   getViewType() {
     return EPUB_VIEW_TYPE;
@@ -2578,20 +2743,29 @@ var EpubView = class extends import_obsidian.ItemView {
     try {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!file) {
-        new import_obsidian.Notice(`File not found: ${path}`);
+        new import_obsidian2.Notice(`File not found: ${path}`);
         return;
       }
       const data = await this.app.vault.readBinary(file);
       this.epub = await parseEpub(data);
       this.buildToc();
       this.leaf.updateHeader();
-      this.currentChapter = 0;
+      const saved = this.plugin.getReadingPosition(this.filePath);
+      if (saved) {
+        this.currentChapter = saved.chapter;
+        if (saved.anchorText || saved.scrollFraction > 0) {
+          this.pendingRestore = { anchorText: saved.anchorText, scrollFraction: saved.scrollFraction };
+        }
+      } else {
+        this.currentChapter = 0;
+      }
       await this.renderChapter();
     } catch (e) {
-      new import_obsidian.Notice(`Failed to open EPUB: ${e.message}`);
+      new import_obsidian2.Notice(`Failed to open EPUB: ${e.message}`);
       console.error("EPUB parse error:", e);
     }
   }
+  // ─── TOC ──────────────────────────────────────────────────────
   buildToc() {
     if (!this.tocContainer || !this.epub) return;
     this.tocContainer.empty();
@@ -2639,13 +2813,19 @@ var EpubView = class extends import_obsidian.ItemView {
     this.tocVisible = !this.tocVisible;
     this.tocContainer.style.display = this.tocVisible ? "block" : "none";
   }
+  // ─── Chapter Rendering ────────────────────────────────────────
   async renderChapter(fragment) {
     if (!this.epub || !this.iframe) return;
     const spineItem = this.epub.spine[this.currentChapter];
     if (!spineItem) return;
+    this.saveReadingPosition();
     let html = await getChapterContent(this.epub, spineItem.href);
-    console.log(`[Thorium] Chapter ${this.currentChapter}: href="${spineItem.href}", html length=${html.length}, first 200 chars:`, html.substring(0, 200));
     html = await this.resolveResources(html, spineItem.href);
+    this.chapterAnnotations = await this.annotationMgr.loadChapterAnnotations(
+      this.filePath,
+      this.currentChapter
+    );
+    const annotationScript = this.buildAnnotationScript();
     const isDark = this.plugin.settings.theme === "dark";
     const fontSize = this.plugin.settings.fontSize;
     const fontFamily = this.plugin.settings.fontFamily;
@@ -2670,6 +2850,79 @@ var EpubView = class extends import_obsidian.ItemView {
         img { max-width: 100% !important; height: auto !important; }
         a { color: ${isDark ? "#6ba4f8" : "#2563eb"} !important; }
         pre, code { font-size: 0.9em; }
+
+        mark.thorium-highlight {
+          border-radius: 2px;
+          padding: 1px 0;
+          cursor: pointer;
+        }
+        mark.thorium-highlight[data-color="yellow"] { background: rgba(255, 235, 59, 0.45); }
+        mark.thorium-highlight[data-color="green"]  { background: rgba(76, 175, 80, 0.35); }
+        mark.thorium-highlight[data-color="blue"]   { background: rgba(66, 165, 245, 0.35); }
+        mark.thorium-highlight[data-color="pink"]   { background: rgba(236, 64, 122, 0.30); }
+        mark.thorium-highlight[data-color="orange"] { background: rgba(255, 152, 0, 0.40); }
+
+        mark.thorium-highlight[data-has-note="true"]::after {
+          content: "\\1F4DD";
+          font-size: 0.6em;
+          vertical-align: super;
+          margin-left: 2px;
+        }
+
+        #thorium-sel-toolbar {
+          display: none;
+          position: absolute;
+          z-index: 9999;
+          background: ${isDark ? "#2d2d2d" : "#fff"};
+          border: 1px solid ${isDark ? "#555" : "#ccc"};
+          border-radius: 6px;
+          padding: 4px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          gap: 4px;
+          align-items: center;
+        }
+        #thorium-sel-toolbar button {
+          border: none;
+          border-radius: 4px;
+          padding: 4px 8px;
+          cursor: pointer;
+          font-size: 13px;
+          background: ${isDark ? "#444" : "#f0f0f0"};
+          color: ${isDark ? "#ddd" : "#333"};
+        }
+        #thorium-sel-toolbar button:hover {
+          background: ${isDark ? "#555" : "#ddd"};
+        }
+        .thorium-color-dot {
+          width: 18px; height: 18px;
+          border-radius: 50%;
+          border: 2px solid ${isDark ? "#666" : "#ccc"};
+          cursor: pointer;
+          display: inline-block;
+        }
+        .thorium-color-dot:hover { border-color: ${isDark ? "#aaa" : "#666"}; }
+
+        #thorium-hl-tooltip {
+          display: none;
+          position: absolute;
+          z-index: 9999;
+          background: ${isDark ? "#2d2d2d" : "#fff"};
+          border: 1px solid ${isDark ? "#555" : "#ccc"};
+          border-radius: 6px;
+          padding: 8px 10px;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+          max-width: 300px;
+          font-size: 13px;
+          color: ${isDark ? "#ddd" : "#333"};
+        }
+        #thorium-hl-tooltip .hl-note { margin: 4px 0; font-style: italic; }
+        #thorium-hl-tooltip button {
+          border: none; border-radius: 4px; padding: 3px 8px;
+          cursor: pointer; font-size: 12px; margin-right: 4px;
+          background: ${isDark ? "#444" : "#f0f0f0"};
+          color: ${isDark ? "#ddd" : "#333"};
+        }
+        #thorium-hl-tooltip button:hover { background: ${isDark ? "#555" : "#ddd"}; }
       </style>
     `;
     if (html.includes("</head>")) {
@@ -2679,33 +2932,460 @@ var EpubView = class extends import_obsidian.ItemView {
     } else {
       html = styleOverride + html;
     }
+    const toolbarHtml = `
+      <div id="thorium-sel-toolbar"></div>
+      <div id="thorium-hl-tooltip"></div>
+      <script>${annotationScript}<\/script>
+    `;
+    if (html.includes("</body>")) {
+      html = html.replace("</body>", toolbarHtml + "</body>");
+    } else {
+      html = html + toolbarHtml;
+    }
     this.iframe.srcdoc = html;
-    if (fragment) {
-      this.iframe.onload = () => {
+    this.setupIframeListener();
+    this.iframe.onload = () => {
+      if (fragment) {
         try {
           const el = this.iframe?.contentDocument?.getElementById(fragment);
           el?.scrollIntoView();
         } catch {
         }
-      };
-    }
+      }
+      if (this.pendingRestore) {
+        const restore = this.pendingRestore;
+        this.pendingRestore = null;
+        this.doScrollRestore(restore);
+      }
+      try {
+        this.iframe?.contentDocument?.addEventListener("scroll", () => {
+          this.debounceSavePosition();
+        });
+      } catch {
+      }
+    };
     if (this.chapterTitle) {
       const tocLabel = this.findTocLabel(spineItem.href);
       this.chapterTitle.textContent = tocLabel || `${this.currentChapter + 1} / ${this.epub.spine.length}`;
     }
   }
-  findTocLabel(href) {
-    const search = (items) => {
-      for (const item of items) {
-        const cleanHref = item.href.split("#")[0];
-        if (href === cleanHref || href.endsWith(cleanHref)) return item.label;
-        const child = search(item.children);
-        if (child) return child;
+  // ─── Annotation Script (injected into iframe) ────────────────
+  buildAnnotationScript() {
+    const highlights = this.chapterAnnotations.map((a) => ({
+      id: a.id,
+      text: a.selectedText,
+      prefix: a.prefix,
+      suffix: a.suffix,
+      color: a.color,
+      note: a.note
+    }));
+    return `
+    (function() {
+      var highlights = ${JSON.stringify(highlights)};
+      var colors = ["yellow", "green", "blue", "pink", "orange"];
+
+      function applyHighlights() {
+        highlights.forEach(function(hl) {
+          findAndHighlight(hl);
+        });
       }
-      return "";
-    };
-    return this.epub ? search(this.epub.toc) : "";
+
+      function findAndHighlight(hl) {
+        var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        var fullText = "";
+        var nodes = [];
+
+        while (walker.nextNode()) {
+          var node = walker.currentNode;
+          nodes.push({ node: node, start: fullText.length });
+          fullText += node.textContent;
+        }
+
+        var searchText = hl.text;
+        var idx = -1;
+
+        if (hl.prefix && hl.suffix) {
+          var anchorIdx = fullText.indexOf(hl.prefix + searchText + hl.suffix);
+          if (anchorIdx >= 0) idx = anchorIdx + hl.prefix.length;
+        }
+        if (idx < 0 && hl.prefix) {
+          var anchorIdx2 = fullText.indexOf(hl.prefix + searchText);
+          if (anchorIdx2 >= 0) idx = anchorIdx2 + hl.prefix.length;
+        }
+        if (idx < 0) {
+          idx = fullText.indexOf(searchText);
+        }
+        if (idx < 0) return;
+
+        var endIdx = idx + searchText.length;
+
+        var startNode = null, endNode = null;
+        var startOffset = 0, endOffset = 0;
+
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          var nEnd = n.start + n.node.textContent.length;
+          if (!startNode && nEnd > idx) {
+            startNode = n.node;
+            startOffset = idx - n.start;
+          }
+          if (nEnd >= endIdx) {
+            endNode = n.node;
+            endOffset = endIdx - n.start;
+            break;
+          }
+        }
+
+        if (!startNode || !endNode) return;
+
+        try {
+          var range = document.createRange();
+          range.setStart(startNode, startOffset);
+          range.setEnd(endNode, endOffset);
+
+          var mark = document.createElement("mark");
+          mark.className = "thorium-highlight";
+          mark.setAttribute("data-color", hl.color);
+          mark.setAttribute("data-annotation-id", hl.id);
+          mark.setAttribute("data-has-note", hl.note ? "true" : "false");
+          range.surroundContents(mark);
+
+          mark.addEventListener("click", function(e) {
+            e.stopPropagation();
+            showHighlightTooltip(hl, mark);
+          });
+        } catch (e) {
+          console.log("[Thorium] Could not highlight:", e.message);
+        }
+      }
+
+      // Cached selection data so mobile taps don't lose it
+      var cachedSelection = null;
+
+      function showSelectionToolbar() {
+        var sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.toString().trim()) {
+          hideSelectionToolbar();
+          return;
+        }
+
+        var toolbar = document.getElementById("thorium-sel-toolbar");
+        if (!toolbar) return;
+
+        var range = sel.getRangeAt(0);
+        var rect = range.getBoundingClientRect();
+
+        // Cache the selection data NOW before mobile clears it on tap
+        var selectedText = sel.toString().trim();
+        var walker2 = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        var fullText = "";
+        while (walker2.nextNode()) { fullText += walker2.currentNode.textContent; }
+        var textIdx = fullText.indexOf(selectedText);
+        cachedSelection = {
+          selectedText: selectedText,
+          prefix: textIdx > 0 ? fullText.substring(Math.max(0, textIdx - 30), textIdx) : "",
+          suffix: fullText.substring(textIdx + selectedText.length, textIdx + selectedText.length + 30)
+        };
+
+        toolbar.innerHTML = "";
+        toolbar.style.display = "flex";
+        toolbar.style.left = (rect.left + window.scrollX) + "px";
+        toolbar.style.top = (rect.bottom + window.scrollY + 6) + "px";
+
+        colors.forEach(function(color) {
+          var dot = document.createElement("span");
+          dot.className = "thorium-color-dot";
+          dot.style.background = {
+            yellow: "#FFEB3B", green: "#4CAF50", blue: "#42A5F5",
+            pink: "#EC407A", orange: "#FF9800"
+          }[color];
+          dot.title = "Highlight " + color;
+          dot.addEventListener("pointerdown", function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            createHighlight(color, false);
+          });
+          toolbar.appendChild(dot);
+        });
+
+        var noteBtn = document.createElement("button");
+        noteBtn.textContent = "Note";
+        noteBtn.addEventListener("pointerdown", function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          createHighlight("yellow", true);
+        });
+        toolbar.appendChild(noteBtn);
+      }
+
+      function hideSelectionToolbar() {
+        var toolbar = document.getElementById("thorium-sel-toolbar");
+        if (toolbar) toolbar.style.display = "none";
+      }
+
+      function createHighlight(color, withNote) {
+        if (!cachedSelection || !cachedSelection.selectedText) return;
+
+        window.parent.postMessage({
+          type: "thorium-create-annotation",
+          selectedText: cachedSelection.selectedText,
+          prefix: cachedSelection.prefix,
+          suffix: cachedSelection.suffix,
+          color: color,
+          withNote: withNote
+        }, "*");
+
+        var sel = window.getSelection();
+        if (sel) sel.removeAllRanges();
+        cachedSelection = null;
+        hideSelectionToolbar();
+      }
+
+      function showHighlightTooltip(hl, markEl) {
+        var tooltip = document.getElementById("thorium-hl-tooltip");
+        if (!tooltip) return;
+
+        var rect = markEl.getBoundingClientRect();
+        tooltip.style.display = "block";
+        tooltip.style.left = (rect.left + window.scrollX) + "px";
+        tooltip.style.top = (rect.bottom + window.scrollY + 4) + "px";
+
+        tooltip.innerHTML = "";
+
+        if (hl.note) {
+          var noteEl = document.createElement("div");
+          noteEl.className = "hl-note";
+          noteEl.textContent = hl.note;
+          tooltip.appendChild(noteEl);
+        }
+
+        var editBtn = document.createElement("button");
+        editBtn.textContent = "Edit Note";
+        editBtn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          window.parent.postMessage({ type: "thorium-edit-annotation", id: hl.id }, "*");
+          tooltip.style.display = "none";
+        });
+        tooltip.appendChild(editBtn);
+
+        var delBtn = document.createElement("button");
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", function(e) {
+          e.stopPropagation();
+          window.parent.postMessage({ type: "thorium-delete-annotation", id: hl.id }, "*");
+          tooltip.style.display = "none";
+        });
+        tooltip.appendChild(delBtn);
+
+        setTimeout(function() {
+          document.addEventListener("click", function handler(ev) {
+            if (!ev.target.closest("#thorium-hl-tooltip")) {
+              tooltip.style.display = "none";
+              document.removeEventListener("click", handler);
+            }
+          });
+        }, 10);
+      }
+
+      document.addEventListener("mouseup", function() {
+        setTimeout(showSelectionToolbar, 50);
+      });
+
+      // Touch support for mobile
+      document.addEventListener("touchend", function() {
+        setTimeout(showSelectionToolbar, 300);
+      });
+
+      // Also listen for selectionchange as a fallback (works on mobile)
+      var selChangeTimer = null;
+      document.addEventListener("selectionchange", function() {
+        if (selChangeTimer) clearTimeout(selChangeTimer);
+        selChangeTimer = setTimeout(function() {
+          var sel = window.getSelection();
+          if (sel && !sel.isCollapsed && sel.toString().trim()) {
+            showSelectionToolbar();
+          }
+        }, 400);
+      });
+
+      document.addEventListener("mousedown", function(e) {
+        if (!e.target.closest("#thorium-sel-toolbar")) {
+          hideSelectionToolbar();
+        }
+        if (!e.target.closest("#thorium-hl-tooltip")) {
+          var tooltip = document.getElementById("thorium-hl-tooltip");
+          if (tooltip) tooltip.style.display = "none";
+        }
+      });
+
+      document.addEventListener("touchstart", function(e) {
+        if (!e.target.closest("#thorium-sel-toolbar")) {
+          hideSelectionToolbar();
+        }
+        if (!e.target.closest("#thorium-hl-tooltip")) {
+          var tooltip = document.getElementById("thorium-hl-tooltip");
+          if (tooltip) tooltip.style.display = "none";
+        }
+      });
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", applyHighlights);
+      } else {
+        setTimeout(applyHighlights, 0);
+      }
+    })();
+    `;
   }
+  // ─── iframe message handler ───────────────────────────────────
+  messageHandler = null;
+  setupIframeListener() {
+    if (this.messageHandler) {
+      window.removeEventListener("message", this.messageHandler);
+    }
+    this.messageHandler = async (e) => {
+      const data = e.data;
+      if (!data || typeof data.type !== "string") return;
+      if (data.type === "thorium-create-annotation") {
+        await this.handleCreateAnnotation(data);
+      } else if (data.type === "thorium-edit-annotation") {
+        await this.handleEditAnnotation(data.id);
+      } else if (data.type === "thorium-delete-annotation") {
+        await this.handleDeleteAnnotation(data.id);
+      }
+    };
+    window.addEventListener("message", this.messageHandler);
+  }
+  async handleCreateAnnotation(data) {
+    if (!this.epub) return;
+    const chapterTitle = this.findTocLabel(this.epub.spine[this.currentChapter]?.href || "") || `Chapter ${this.currentChapter + 1}`;
+    let note = "";
+    if (data.withNote) {
+      note = await this.promptForNote("");
+    }
+    try {
+      await this.annotationMgr.createAnnotation({
+        bookFile: this.filePath,
+        bookTitle: this.epub.metadata.title,
+        chapter: this.currentChapter,
+        chapterTitle,
+        selectedText: data.selectedText,
+        prefix: data.prefix,
+        suffix: data.suffix,
+        color: data.color,
+        note
+      });
+      new import_obsidian2.Notice("Highlight saved");
+      await this.renderChapter();
+    } catch (e) {
+      new import_obsidian2.Notice(`Failed to save highlight: ${e.message}`);
+    }
+  }
+  async handleEditAnnotation(id) {
+    const ann = this.chapterAnnotations.find((a) => a.id === id);
+    if (!ann) return;
+    const newNote = await this.promptForNote(ann.note);
+    try {
+      await this.annotationMgr.updateAnnotationNote(ann, newNote);
+      new import_obsidian2.Notice("Note updated");
+      await this.renderChapter();
+    } catch (e) {
+      new import_obsidian2.Notice(`Failed to update note: ${e.message}`);
+    }
+  }
+  async handleDeleteAnnotation(id) {
+    const ann = this.chapterAnnotations.find((a) => a.id === id);
+    if (!ann) return;
+    try {
+      await this.annotationMgr.deleteAnnotation(ann);
+      new import_obsidian2.Notice("Highlight deleted");
+      await this.renderChapter();
+    } catch (e) {
+      new import_obsidian2.Notice(`Failed to delete highlight: ${e.message}`);
+    }
+  }
+  promptForNote(existingNote) {
+    return new Promise((resolve) => {
+      const modal = new NoteModal(this.app, existingNote, resolve);
+      modal.open();
+    });
+  }
+  // ─── Reading Position ─────────────────────────────────────────
+  debounceSavePosition() {
+    if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
+    this.savePositionTimer = setTimeout(() => this.saveReadingPosition(), 1e3);
+  }
+  doScrollRestore(saved) {
+    const delays = [0, 200, 500, 1e3];
+    let restored = false;
+    const tryOnce = () => {
+      if (restored) return;
+      try {
+        const doc = this.iframe?.contentDocument;
+        if (!doc) return;
+        if (saved.anchorText) {
+          const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div, span");
+          for (let i = 0; i < elements.length; i++) {
+            const el = elements[i];
+            const text = (el.textContent || "").trim();
+            if (text.length > 10 && text.substring(0, 80) === saved.anchorText) {
+              el.scrollIntoView({ block: "start" });
+              restored = true;
+              return;
+            }
+          }
+          for (let i = 0; i < elements.length; i++) {
+            const el = elements[i];
+            const text = (el.textContent || "").trim();
+            if (text.length > 10 && saved.anchorText.length > 20 && text.includes(saved.anchorText.substring(0, 40))) {
+              el.scrollIntoView({ block: "start" });
+              restored = true;
+              return;
+            }
+          }
+        }
+        if (saved.scrollFraction > 0) {
+          const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+          if (maxScroll > 50) {
+            doc.documentElement.scrollTop = maxScroll * saved.scrollFraction;
+            restored = true;
+          }
+        }
+      } catch {
+      }
+    };
+    for (const d of delays) {
+      setTimeout(tryOnce, d);
+    }
+  }
+  saveReadingPosition() {
+    if (!this.filePath || !this.iframe) return;
+    let scrollFraction = 0;
+    let anchorText = "";
+    try {
+      const doc = this.iframe.contentDocument;
+      if (doc) {
+        const scrollTop = doc.documentElement.scrollTop;
+        const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
+        const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div");
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          const rect = el.getBoundingClientRect();
+          if (rect.top >= -10 && el.textContent && el.textContent.trim().length > 10) {
+            anchorText = el.textContent.trim().substring(0, 80);
+            break;
+          }
+        }
+      }
+    } catch {
+    }
+    this.plugin.saveReadingPosition(this.filePath, {
+      chapter: this.currentChapter,
+      scrollFraction,
+      anchorText
+    });
+  }
+  // ─── Resource Resolution ──────────────────────────────────────
   async resolveResources(html, chapterHref) {
     if (!this.epub) return html;
     const chapterDir = chapterHref.substring(0, chapterHref.lastIndexOf("/") + 1);
@@ -2767,8 +3447,22 @@ var EpubView = class extends import_obsidian.ItemView {
     }
     return resolved.join("/");
   }
+  // ─── Navigation & Preferences ─────────────────────────────────
+  findTocLabel(href) {
+    const search = (items) => {
+      for (const item of items) {
+        const cleanHref = item.href.split("#")[0];
+        if (href === cleanHref || href.endsWith(cleanHref)) return item.label;
+        const child = search(item.children);
+        if (child) return child;
+      }
+      return "";
+    };
+    return this.epub ? search(this.epub.toc) : "";
+  }
   navigateChapter(delta) {
     if (!this.epub) return;
+    this.saveReadingPosition();
     const next = this.currentChapter + delta;
     if (next >= 0 && next < this.epub.spine.length) {
       this.currentChapter = next;
@@ -2791,7 +3485,13 @@ var EpubView = class extends import_obsidian.ItemView {
     this.plugin.saveSettings();
     this.renderChapter();
   }
+  // ─── Lifecycle ────────────────────────────────────────────────
   async onClose() {
+    this.saveReadingPosition();
+    if (this.messageHandler) {
+      window.removeEventListener("message", this.messageHandler);
+    }
+    if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
     this.epub = null;
   }
   getState() {
@@ -2805,12 +3505,45 @@ var EpubView = class extends import_obsidian.ItemView {
         this.currentChapter = state.chapter;
       }
       await this.loadEpubFile(this.filePath);
-      if (typeof state.chapter === "number" && state.chapter > 0) {
-        this.currentChapter = state.chapter;
-        await this.renderChapter();
-      }
     }
     await super.setState(state, result);
+  }
+};
+var NoteModal = class extends import_obsidian2.Modal {
+  note;
+  resolve;
+  constructor(app, existingNote, resolve) {
+    super(app);
+    this.note = existingNote;
+    this.resolve = resolve;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Annotation Note" });
+    const textarea = new import_obsidian2.TextAreaComponent(contentEl);
+    textarea.setValue(this.note);
+    textarea.inputEl.style.width = "100%";
+    textarea.inputEl.style.minHeight = "120px";
+    textarea.inputEl.style.marginBottom = "12px";
+    textarea.onChange((val) => this.note = val);
+    const btnRow = contentEl.createDiv();
+    btnRow.style.display = "flex";
+    btnRow.style.gap = "8px";
+    btnRow.style.justifyContent = "flex-end";
+    const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
+    saveBtn.addEventListener("click", () => {
+      this.resolve(this.note);
+      this.close();
+    });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => {
+      this.resolve(this.note);
+      this.close();
+    });
+    setTimeout(() => textarea.inputEl.focus(), 50);
+  }
+  onClose() {
+    this.contentEl.empty();
   }
 };
 
@@ -2820,9 +3553,10 @@ var DEFAULT_SETTINGS = {
   fontFamily: "Georgia",
   theme: "light",
   thoriumServerUrl: "",
-  useThoriumServer: false
+  useThoriumServer: false,
+  readingPositions: {}
 };
-var ThoriumReaderPlugin = class extends import_obsidian2.Plugin {
+var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
   settings = DEFAULT_SETTINGS;
   async onload() {
     await this.loadSettings();
@@ -2836,10 +3570,19 @@ var ThoriumReaderPlugin = class extends import_obsidian2.Plugin {
     this.addRibbonIcon("book-open", "Open EPUB", () => this.openEpubFilePicker());
     this.addSettingTab(new ThoriumSettingTab(this.app, this));
   }
+  // ─── Reading Position ─────────────────────────────────────────
+  getReadingPosition(filePath) {
+    return this.settings.readingPositions[filePath] || null;
+  }
+  saveReadingPosition(filePath, pos) {
+    this.settings.readingPositions[filePath] = pos;
+    this.saveSettings();
+  }
+  // ─── File picker ──────────────────────────────────────────────
   async openEpubFilePicker() {
     const epubFiles = this.app.vault.getFiles().filter((f) => f.extension === "epub");
     if (epubFiles.length === 0) {
-      new import_obsidian2.Notice("No EPUB files found in your vault.");
+      new import_obsidian3.Notice("No EPUB files found in your vault.");
       return;
     }
     const { FuzzySuggestModal } = await import("obsidian");
@@ -2880,6 +3623,9 @@ var ThoriumReaderPlugin = class extends import_obsidian2.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!this.settings.readingPositions) {
+      this.settings.readingPositions = {};
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -2887,7 +3633,7 @@ var ThoriumReaderPlugin = class extends import_obsidian2.Plugin {
   onunload() {
   }
 };
-var ThoriumSettingTab = class extends import_obsidian2.PluginSettingTab {
+var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
   plugin;
   constructor(app, plugin) {
     super(app, plugin);
@@ -2897,13 +3643,13 @@ var ThoriumSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Thorium EPUB Reader" });
-    new import_obsidian2.Setting(containerEl).setName("Font size").setDesc("Default font size in pixels for the reader").addSlider(
+    new import_obsidian3.Setting(containerEl).setName("Font size").setDesc("Default font size in pixels for the reader").addSlider(
       (slider) => slider.setLimits(12, 32, 1).setValue(this.plugin.settings.fontSize).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.fontSize = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Font family").setDesc("Default font for reading").addDropdown(
+    new import_obsidian3.Setting(containerEl).setName("Font family").setDesc("Default font for reading").addDropdown(
       (dd) => dd.addOptions({
         Georgia: "Georgia (Serif)",
         "Palatino Linotype": "Palatino (Serif)",
@@ -2911,30 +3657,40 @@ var ThoriumSettingTab = class extends import_obsidian2.PluginSettingTab {
         Arial: "Arial (Sans)",
         Verdana: "Verdana (Sans)",
         "Segoe UI": "Segoe UI (Sans)",
-        "monospace": "Monospace"
+        monospace: "Monospace"
       }).setValue(this.plugin.settings.fontFamily).onChange(async (value) => {
         this.plugin.settings.fontFamily = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Default theme").setDesc("Reading theme for the EPUB viewer").addDropdown(
+    new import_obsidian3.Setting(containerEl).setName("Default theme").setDesc("Reading theme for the EPUB viewer").addDropdown(
       (dd) => dd.addOptions({ light: "Light", sepia: "Sepia", dark: "Dark" }).setValue(this.plugin.settings.theme).onChange(async (value) => {
         this.plugin.settings.theme = value;
         await this.plugin.saveSettings();
       })
     );
+    containerEl.createEl("h3", { text: "Reading Positions" });
+    const posCount = Object.keys(this.plugin.settings.readingPositions).length;
+    new import_obsidian3.Setting(containerEl).setName("Saved positions").setDesc(`Currently tracking ${posCount} book(s)`).addButton(
+      (btn) => btn.setButtonText("Clear all").onClick(async () => {
+        this.plugin.settings.readingPositions = {};
+        await this.plugin.saveSettings();
+        this.display();
+        new import_obsidian3.Notice("All reading positions cleared");
+      })
+    );
     containerEl.createEl("h3", { text: "Thorium Web Server (Advanced)" });
     containerEl.createEl("p", {
-      text: "If you have a self-hosted Thorium Web instance with the Go Toolkit serving your EPUBs as Web Publication Manifests, you can connect to it here. This enables the full Thorium Web reading experience with advanced features.",
+      text: "If you have a self-hosted Thorium Web instance with the Go Toolkit serving your EPUBs as Web Publication Manifests, you can connect to it here.",
       cls: "setting-item-description"
     });
-    new import_obsidian2.Setting(containerEl).setName("Use Thorium Web server").setDesc("Connect to an external Thorium Web instance instead of the built-in reader").addToggle(
+    new import_obsidian3.Setting(containerEl).setName("Use Thorium Web server").setDesc("Connect to an external Thorium Web instance instead of the built-in reader").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.useThoriumServer).onChange(async (value) => {
         this.plugin.settings.useThoriumServer = value;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Thorium Web server URL").setDesc("URL of your Thorium Web instance (e.g. https://reader.example.com)").addText(
+    new import_obsidian3.Setting(containerEl).setName("Thorium Web server URL").setDesc("URL of your Thorium Web instance (e.g. https://reader.example.com)").addText(
       (text) => text.setPlaceholder("https://reader.example.com").setValue(this.plugin.settings.thoriumServerUrl).onChange(async (value) => {
         this.plugin.settings.thoriumServerUrl = value;
         await this.plugin.saveSettings();

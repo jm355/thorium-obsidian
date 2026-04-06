@@ -1,12 +1,19 @@
 import { Plugin, TFile, WorkspaceLeaf, Notice, PluginSettingTab, App, Setting } from "obsidian";
 import { EpubView, EPUB_VIEW_TYPE } from "./epub-view";
 
+interface ReadingPosition {
+  chapter: number;
+  scrollFraction: number;
+  anchorText?: string;  // first visible paragraph text for robust restore
+}
+
 interface ThoriumReaderSettings {
   fontSize: number;
   fontFamily: string;
   theme: string;
   thoriumServerUrl: string;
   useThoriumServer: boolean;
+  readingPositions: Record<string, ReadingPosition>;
 }
 
 const DEFAULT_SETTINGS: ThoriumReaderSettings = {
@@ -15,6 +22,7 @@ const DEFAULT_SETTINGS: ThoriumReaderSettings = {
   theme: "light",
   thoriumServerUrl: "",
   useThoriumServer: false,
+  readingPositions: {},
 };
 
 export default class ThoriumReaderPlugin extends Plugin {
@@ -23,25 +31,32 @@ export default class ThoriumReaderPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
 
-    // Register the EPUB view
     this.registerView(EPUB_VIEW_TYPE, (leaf) => new EpubView(leaf, this));
-
-    // Register .epub extension
     this.registerExtensions(["epub"], EPUB_VIEW_TYPE);
 
-    // Command: Open EPUB file picker
     this.addCommand({
       id: "open-epub",
       name: "Open an EPUB file from vault",
       callback: () => this.openEpubFilePicker(),
     });
 
-    // Ribbon icon
     this.addRibbonIcon("book-open", "Open EPUB", () => this.openEpubFilePicker());
-
-    // Settings tab
     this.addSettingTab(new ThoriumSettingTab(this.app, this));
   }
+
+  // ─── Reading Position ─────────────────────────────────────────
+
+  getReadingPosition(filePath: string): ReadingPosition | null {
+    return this.settings.readingPositions[filePath] || null;
+  }
+
+  saveReadingPosition(filePath: string, pos: ReadingPosition): void {
+    this.settings.readingPositions[filePath] = pos;
+    // Debounced save — don't await, fire-and-forget
+    this.saveSettings();
+  }
+
+  // ─── File picker ──────────────────────────────────────────────
 
   async openEpubFilePicker(): Promise<void> {
     const epubFiles = this.app.vault
@@ -53,7 +68,6 @@ export default class ThoriumReaderPlugin extends Plugin {
       return;
     }
 
-    // Use Obsidian's fuzzy suggest modal
     const { FuzzySuggestModal } = await import("obsidian");
 
     class EpubPickerModal extends FuzzySuggestModal<TFile> {
@@ -82,7 +96,6 @@ export default class ThoriumReaderPlugin extends Plugin {
   }
 
   async openEpubInView(filePath: string): Promise<void> {
-    // Check if already open
     const existing = this.app.workspace.getLeavesOfType(EPUB_VIEW_TYPE);
     for (const leaf of existing) {
       const view = leaf.view as EpubView;
@@ -92,7 +105,6 @@ export default class ThoriumReaderPlugin extends Plugin {
       }
     }
 
-    // Open in a new leaf
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({
       type: EPUB_VIEW_TYPE,
@@ -103,6 +115,10 @@ export default class ThoriumReaderPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    // Ensure readingPositions exists even on older saved data
+    if (!this.settings.readingPositions) {
+      this.settings.readingPositions = {};
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -154,7 +170,7 @@ class ThoriumSettingTab extends PluginSettingTab {
             Arial: "Arial (Sans)",
             Verdana: "Verdana (Sans)",
             "Segoe UI": "Segoe UI (Sans)",
-            "monospace": "Monospace",
+            monospace: "Monospace",
           })
           .setValue(this.plugin.settings.fontFamily)
           .onChange(async (value) => {
@@ -176,13 +192,27 @@ class ThoriumSettingTab extends PluginSettingTab {
           })
       );
 
+    containerEl.createEl("h3", { text: "Reading Positions" });
+
+    const posCount = Object.keys(this.plugin.settings.readingPositions).length;
+    new Setting(containerEl)
+      .setName("Saved positions")
+      .setDesc(`Currently tracking ${posCount} book(s)`)
+      .addButton((btn) =>
+        btn.setButtonText("Clear all").onClick(async () => {
+          this.plugin.settings.readingPositions = {};
+          await this.plugin.saveSettings();
+          this.display();
+          new Notice("All reading positions cleared");
+        })
+      );
+
     containerEl.createEl("h3", { text: "Thorium Web Server (Advanced)" });
 
     containerEl.createEl("p", {
       text:
         "If you have a self-hosted Thorium Web instance with the Go Toolkit " +
-        "serving your EPUBs as Web Publication Manifests, you can connect to it here. " +
-        "This enables the full Thorium Web reading experience with advanced features.",
+        "serving your EPUBs as Web Publication Manifests, you can connect to it here.",
       cls: "setting-item-description",
     });
 
