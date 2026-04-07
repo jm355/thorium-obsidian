@@ -87,10 +87,23 @@
   border: none;
   width: 100%;
   height: 100%;
-  background: white;
+  background: var(--background-primary);
 }
 
-/* Dark theme override for the iframe background */
-.theme-dark .thorium-reader-frame {
-  background: #1e1e1e;
+/* TOC section header */
+.thorium-toc-header {
+  margin: 0 0 8px 0;
+}
+
+/* Annotation note modal */
+.thorium-note-textarea {
+  width: 100%;
+  min-height: 120px;
+  margin-bottom: 12px;
+}
+
+.thorium-note-buttons {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }

@@ -141,7 +141,7 @@ class ThoriumSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Thorium EPUB Reader" });
+    new Setting(containerEl).setName("Thorium EPUB Reader").setHeading();
 
     new Setting(containerEl)
       .setName("Font size")
@@ -191,7 +191,7 @@ class ThoriumSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "Reading Positions" });
+    new Setting(containerEl).setName("Reading positions").setHeading();
 
     const posCount = Object.keys(this.plugin.settings.readingPositions).length;
     new Setting(containerEl)
@@ -206,7 +206,7 @@ class ThoriumSettingTab extends PluginSettingTab {
         })
       );
 
-    containerEl.createEl("h3", { text: "Thorium Web Server (Advanced)" });
+    new Setting(containerEl).setName("Thorium web server (advanced)").setHeading();
 
     containerEl.createEl("p", {
       text:

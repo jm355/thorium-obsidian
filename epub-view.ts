@@ -121,8 +121,7 @@ export class EpubView extends ItemView {
     if (!this.tocContainer || !this.epub) return;
     this.tocContainer.empty();
 
-    const header = this.tocContainer.createEl("h3", { text: "Table of Contents" });
-    header.style.margin = "0 0 8px 0";
+    this.tocContainer.createEl("h3", { text: "Table of Contents", cls: "thorium-toc-header" });
 
     if (this.epub.toc.length === 0) {
       this.epub.spine.forEach((item, idx) => {
@@ -498,8 +497,8 @@ export class EpubView extends ItemView {
             e.stopPropagation();
             showHighlightTooltip(hl, mark);
           });
-        } catch (e) {
-          console.log("[Thorium] Could not highlight:", e.message);
+        } catch {
+          // Could not highlight — range may span multiple nodes
         }
       }
 
@@ -1057,15 +1056,10 @@ class NoteModal extends Modal {
 
     const textarea = new TextAreaComponent(contentEl);
     textarea.setValue(this.note);
-    textarea.inputEl.style.width = "100%";
-    textarea.inputEl.style.minHeight = "120px";
-    textarea.inputEl.style.marginBottom = "12px";
+    textarea.inputEl.addClass("thorium-note-textarea");
     textarea.onChange((val) => (this.note = val));
 
-    const btnRow = contentEl.createDiv();
-    btnRow.style.display = "flex";
-    btnRow.style.gap = "8px";
-    btnRow.style.justifyContent = "flex-end";
+    const btnRow = contentEl.createDiv({ cls: "thorium-note-buttons" });
 
     const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
     saveBtn.addEventListener("click", () => {

@@ -2843,8 +2843,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   buildToc() {
     if (!this.tocContainer || !this.epub) return;
     this.tocContainer.empty();
-    const header = this.tocContainer.createEl("h3", { text: "Table of Contents" });
-    header.style.margin = "0 0 8px 0";
+    this.tocContainer.createEl("h3", { text: "Table of Contents", cls: "thorium-toc-header" });
     if (this.epub.toc.length === 0) {
       this.epub.spine.forEach((item, idx) => {
         const entry = this.tocContainer.createEl("div", {
@@ -3188,8 +3187,8 @@ var EpubView = class extends import_obsidian2.ItemView {
             e.stopPropagation();
             showHighlightTooltip(hl, mark);
           });
-        } catch (e) {
-          console.log("[Thorium] Could not highlight:", e.message);
+        } catch {
+          // Could not highlight \u2014 range may span multiple nodes
         }
       }
 
@@ -3685,14 +3684,9 @@ var NoteModal = class extends import_obsidian2.Modal {
     contentEl.createEl("h3", { text: "Annotation Note" });
     const textarea = new import_obsidian2.TextAreaComponent(contentEl);
     textarea.setValue(this.note);
-    textarea.inputEl.style.width = "100%";
-    textarea.inputEl.style.minHeight = "120px";
-    textarea.inputEl.style.marginBottom = "12px";
+    textarea.inputEl.addClass("thorium-note-textarea");
     textarea.onChange((val) => this.note = val);
-    const btnRow = contentEl.createDiv();
-    btnRow.style.display = "flex";
-    btnRow.style.gap = "8px";
-    btnRow.style.justifyContent = "flex-end";
+    const btnRow = contentEl.createDiv({ cls: "thorium-note-buttons" });
     const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
     saveBtn.addEventListener("click", () => {
       this.resolve(this.note);
@@ -3805,7 +3799,7 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Thorium EPUB Reader" });
+    new import_obsidian3.Setting(containerEl).setName("Thorium EPUB Reader").setHeading();
     new import_obsidian3.Setting(containerEl).setName("Font size").setDesc("Default font size in pixels for the reader").addSlider(
       (slider) => slider.setLimits(12, 32, 1).setValue(this.plugin.settings.fontSize).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.fontSize = value;
@@ -3832,7 +3826,7 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    containerEl.createEl("h3", { text: "Reading Positions" });
+    new import_obsidian3.Setting(containerEl).setName("Reading positions").setHeading();
     const posCount = Object.keys(this.plugin.settings.readingPositions).length;
     new import_obsidian3.Setting(containerEl).setName("Saved positions").setDesc(`Currently tracking ${posCount} book(s)`).addButton(
       (btn) => btn.setButtonText("Clear all").onClick(async () => {
@@ -3842,7 +3836,7 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
         new import_obsidian3.Notice("All reading positions cleared");
       })
     );
-    containerEl.createEl("h3", { text: "Thorium Web Server (Advanced)" });
+    new import_obsidian3.Setting(containerEl).setName("Thorium web server (advanced)").setHeading();
     containerEl.createEl("p", {
       text: "If you have a self-hosted Thorium Web instance with the Go Toolkit serving your EPUBs as Web Publication Manifests, you can connect to it here.",
       cls: "setting-item-description"
