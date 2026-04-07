@@ -50,10 +50,9 @@ export default class ThoriumReaderPlugin extends Plugin {
     return this.settings.readingPositions[filePath] || null;
   }
 
-  saveReadingPosition(filePath: string, pos: ReadingPosition): void {
+  async saveReadingPosition(filePath: string, pos: ReadingPosition): Promise<void> {
     this.settings.readingPositions[filePath] = pos;
-    // Debounced save — don't await, fire-and-forget
-    this.saveSettings();
+    await this.saveSettings();
   }
 
   // ─── File picker ──────────────────────────────────────────────

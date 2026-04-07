@@ -18,9 +18,11 @@ export interface Annotation {
 export interface ReadingPosition {
   chapter: number;
   scrollFraction: number; // 0-1
+  anchorText?: string;
 }
 
 const ANNOTATION_FOLDER = "epub-annotations";
+const POSITION_FILENAME = "_reading-position.md";
 
 export class AnnotationManager {
   app: App;
@@ -41,9 +43,90 @@ export class AnnotationManager {
 
   /** Ensure the annotation folder exists */
   private async ensureFolder(path: string): Promise<void> {
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (!existing) {
-      await this.app.vault.createFolder(path);
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (!existing) {
+        await this.app.vault.createFolder(path);
+      }
+    } catch {
+      // Folder might already exist despite cache miss
+    }
+  }
+
+  // ─── Reading Position ─────────────────────────────────────────
+
+  /** Save reading position to a markdown file */
+  async savePosition(bookFile: string, pos: ReadingPosition): Promise<void> {
+    const folderPath = this.bookFolderPath(bookFile);
+    await this.ensureFolder(normalizePath(ANNOTATION_FOLDER));
+    await this.ensureFolder(folderPath);
+
+    const filePath = normalizePath(`${folderPath}/${POSITION_FILENAME}`);
+    const content = [
+      "---",
+      `bookFile: "${bookFile}"`,
+      `chapter: ${pos.chapter}`,
+      `scrollFraction: ${pos.scrollFraction}`,
+      `anchorText: "${(pos.anchorText || "").replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`,
+      `updated: "${new Date().toISOString()}"`,
+      "---",
+      "",
+      "This file tracks your reading position. It is managed automatically by the Thorium EPUB Reader plugin.",
+      "",
+    ].join("\n");
+
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      if (existing && existing instanceof TFile) {
+        await this.app.vault.modify(existing, content);
+      } else {
+        if (existing) {
+          await this.app.vault.delete(existing);
+        }
+        await this.app.vault.create(filePath, content);
+      }
+    } catch (e) {
+      try {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file && file instanceof TFile) {
+          await this.app.vault.modify(file, content);
+        }
+      } catch (e2) {
+        throw new Error(`Position save failed: ${e}, retry: ${e2}`);
+      }
+    }
+  }
+
+  /** Load reading position from the markdown file */
+  async loadPosition(bookFile: string): Promise<ReadingPosition | null> {
+    const folderPath = this.bookFolderPath(bookFile);
+    const filePath = normalizePath(`${folderPath}/${POSITION_FILENAME}`);
+
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (!file || !(file instanceof TFile)) return null;
+
+    try {
+      const content = await this.app.vault.read(file);
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) return null;
+
+      const fm = fmMatch[1];
+      const get = (key: string): string => {
+        const m = fm.match(new RegExp(`^${key}:\\s*"(.*?)"\\s*$`, "m"));
+        return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") : "";
+      };
+      const getNum = (key: string): number => {
+        const m = fm.match(new RegExp(`^${key}:\\s*([\\d.]+)`, "m"));
+        return m ? parseFloat(m[1]) : 0;
+      };
+
+      return {
+        chapter: getNum("chapter"),
+        scrollFraction: getNum("scrollFraction"),
+        anchorText: get("anchorText") || undefined,
+      };
+    } catch {
+      return null;
     }
   }
 
@@ -114,6 +197,7 @@ export class AnnotationManager {
 
     for (const child of folder.children) {
       if (!(child instanceof TFile) || child.extension !== "md") continue;
+      if (child.name === "_reading-position.md") continue;
 
       try {
         const content = await this.app.vault.read(child);

@@ -20,6 +20,7 @@ export class EpubView extends ItemView {
   private chapterAnnotations: Annotation[] = [];
   private savePositionTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingRestore: { anchorText?: string; scrollFraction: number } | null = null;
+  private suppressSave = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: ThoriumReaderPlugin) {
     super(leaf);
@@ -68,6 +69,14 @@ export class EpubView extends ItemView {
     const fontUp = toolbar.createEl("button", { text: "A+", cls: "thorium-btn" });
     fontUp.addEventListener("click", () => this.adjustFontSize(2));
 
+    const bookmarkBtn = toolbar.createEl("button", { text: "🔖", cls: "thorium-btn" });
+    bookmarkBtn.addEventListener("click", () => {
+      this.suppressSave = false;
+      this.saveReadingPosition().then(() => {
+        new Notice("Position saved manually");
+      });
+    });
+
     // Content area
     const contentWrapper = container.createDiv({ cls: "thorium-content-wrapper" });
 
@@ -97,7 +106,7 @@ export class EpubView extends ItemView {
       this.leaf.updateHeader();
 
       // Restore saved reading position
-      const saved = this.plugin.getReadingPosition(this.filePath);
+      const saved = await this.annotationMgr.loadPosition(this.filePath);
       if (saved) {
         this.currentChapter = saved.chapter;
         if (saved.anchorText || saved.scrollFraction > 0) {
@@ -131,6 +140,7 @@ export class EpubView extends ItemView {
         });
         entry.addEventListener("click", () => {
           this.currentChapter = idx;
+          this.forceChapterSave();
           this.renderChapter();
         });
       });
@@ -152,6 +162,7 @@ export class EpubView extends ItemView {
         );
         if (idx >= 0) {
           this.currentChapter = idx;
+          this.forceChapterSave();
           this.renderChapter(item.href.includes("#") ? item.href.split("#")[1] : undefined);
         }
       });
@@ -175,9 +186,6 @@ export class EpubView extends ItemView {
 
     const spineItem = this.epub.spine[this.currentChapter];
     if (!spineItem) return;
-
-    // Save position before navigating away
-    this.saveReadingPosition();
 
     let html = await getChapterContent(this.epub, spineItem.href);
     html = await this.resolveResources(html, spineItem.href);
@@ -301,10 +309,65 @@ export class EpubView extends ItemView {
       html = styleOverride + html;
     }
 
+    // Capture restore data before clearing
+    const restoreData = this.pendingRestore;
+    this.pendingRestore = null;
+
+    // Build scroll restore script (runs inside iframe)
+    let scrollRestoreScript = "";
+    if (restoreData && (restoreData.scrollFraction > 0 || restoreData.anchorText)) {
+      const anchorJson = restoreData.anchorText ? JSON.stringify(restoreData.anchorText) : "null";
+      const frac = restoreData.scrollFraction;
+      scrollRestoreScript = `
+        ;(function(){
+          var anchor = ${anchorJson};
+          var frac = ${frac};
+          var done = false;
+          function doRestore() {
+            if (done) return;
+            if (anchor) {
+              var els = document.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote");
+              for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || "").trim();
+                if (t.length > 10 && t.substring(0, 80) === anchor) {
+                  document.documentElement.scrollTop = els[i].offsetTop;
+                  window.scrollTo(0, els[i].offsetTop);
+                  done = true;
+                  return;
+                }
+              }
+              for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || "").trim();
+                if (t.length > 10 && anchor.length > 20 && t.indexOf(anchor.substring(0, 40)) >= 0) {
+                  document.documentElement.scrollTop = els[i].offsetTop;
+                  window.scrollTo(0, els[i].offsetTop);
+                  done = true;
+                  return;
+                }
+              }
+            }
+            if (frac > 0) {
+              var max = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+              if (max > 50) {
+                var target = max * frac;
+                document.documentElement.scrollTop = target;
+                window.scrollTo(0, target);
+                done = true;
+              }
+            }
+          }
+          setTimeout(doRestore, 100);
+          setTimeout(doRestore, 500);
+          setTimeout(doRestore, 1200);
+          window.addEventListener("load", function(){ setTimeout(doRestore, 200); });
+        })();
+      `;
+    }
+
     const toolbarHtml = `
       <div id="thorium-sel-toolbar"></div>
       <div id="thorium-hl-tooltip"></div>
-      <script>${annotationScript}<\/script>
+      <script>${annotationScript}${scrollRestoreScript}<\/script>
     `;
     if (html.includes("</body>")) {
       html = html.replace("</body>", toolbarHtml + "</body>");
@@ -312,9 +375,10 @@ export class EpubView extends ItemView {
       html = html + toolbarHtml;
     }
 
-    this.iframe.srcdoc = html;
     this.setupIframeListener();
 
+    // Set onload BEFORE srcdoc to ensure we don't miss the event
+    const isRestoring = !!scrollRestoreScript;
     this.iframe.onload = () => {
       if (fragment) {
         try {
@@ -323,19 +387,30 @@ export class EpubView extends ItemView {
         } catch { /* ignore */ }
       }
 
-      // Restore scroll position if pending
-      if (this.pendingRestore) {
-        const restore = this.pendingRestore;
-        this.pendingRestore = null;
-        this.doScrollRestore(restore);
-      }
+      const attachScrollListener = () => {
+        try {
+          const iframeDoc = this.iframe?.contentDocument;
+          if (iframeDoc) {
+            iframeDoc.addEventListener("scroll", () => this.debounceSavePosition());
+          }
+        } catch { /* ignore */ }
+      };
 
-      try {
-        this.iframe?.contentDocument?.addEventListener("scroll", () => {
-          this.debounceSavePosition();
-        });
-      } catch { /* ignore */ }
+      if (isRestoring) {
+        // Suppress saves while restore script runs, then attach listener
+        this.suppressSave = true;
+        setTimeout(() => {
+          this.suppressSave = false;
+          attachScrollListener();
+        }, 3000);
+      } else {
+        // No restore — attach listener immediately
+        attachScrollListener();
+      }
     };
+
+    // Set srcdoc AFTER onload handler is attached
+    this.iframe.srcdoc = html;
 
     if (this.chapterTitle) {
       const tocLabel = this.findTocLabel(spineItem.href);
@@ -639,6 +714,45 @@ export class EpubView extends ItemView {
     window.addEventListener("message", this.messageHandler);
   }
 
+  /** Capture the current scroll position and set it as pendingRestore for the next renderChapter */
+  private captureCurrentPosition(): void {
+    if (!this.iframe) return;
+    let scrollFraction = 0;
+    let anchorText = "";
+    try {
+      const doc = this.iframe.contentDocument;
+      if (doc) {
+        const scrollTop = doc.documentElement.scrollTop;
+        const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
+
+        const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+        let bestEl: HTMLElement | null = null;
+        let bestDist = Infinity;
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i] as HTMLElement;
+          const rect = el.getBoundingClientRect();
+          const text = (el.textContent || "").trim();
+          if (text.length > 10 && rect.bottom > 0) {
+            const dist = Math.abs(rect.top);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestEl = el;
+            }
+          }
+        }
+        if (bestEl) {
+          anchorText = (bestEl.textContent || "").trim().substring(0, 80);
+        }
+      }
+    } catch { /* ignore */ }
+    if (scrollFraction > 0 || anchorText) {
+      this.lastGoodFraction = scrollFraction;
+      this.lastGoodAnchor = anchorText;
+    }
+    this.pendingRestore = { anchorText: anchorText || this.lastGoodAnchor, scrollFraction: scrollFraction || this.lastGoodFraction };
+  }
+
   private async handleCreateAnnotation(data: {
     selectedText: string;
     prefix: string;
@@ -670,6 +784,7 @@ export class EpubView extends ItemView {
       });
 
       new Notice("Highlight saved");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new Notice(`Failed to save highlight: ${(e as Error).message}`);
@@ -684,6 +799,7 @@ export class EpubView extends ItemView {
     try {
       await this.annotationMgr.updateAnnotationNote(ann, newNote);
       new Notice("Note updated");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new Notice(`Failed to update note: ${(e as Error).message}`);
@@ -697,6 +813,7 @@ export class EpubView extends ItemView {
     try {
       await this.annotationMgr.deleteAnnotation(ann);
       new Notice("Highlight deleted");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new Notice(`Failed to delete highlight: ${(e as Error).message}`);
@@ -714,91 +831,67 @@ export class EpubView extends ItemView {
 
   private debounceSavePosition(): void {
     if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
-    this.savePositionTimer = setTimeout(() => this.saveReadingPosition(), 1000);
+    this.savePositionTimer = setTimeout(() => {
+      this.saveReadingPosition().catch((e) => {
+        new Notice(`Save failed: ${e}`, 5000);
+      });
+    }, 1000);
   }
 
-  private doScrollRestore(saved: { anchorText?: string; scrollFraction: number }): void {
-    // Try immediately and then with delays for images/fonts loading
-    const delays = [0, 200, 500, 1000];
-    let restored = false;
+  private savePositionCount = 0;
 
-    const tryOnce = () => {
-      if (restored) return;
-      try {
-        const doc = this.iframe?.contentDocument;
-        if (!doc) return;
+  private lastGoodFraction = 0;
+  private lastGoodAnchor = "";
 
-        // Try anchor text first
-        if (saved.anchorText) {
-          const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div, span");
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
-            const text = (el.textContent || "").trim();
-            if (text.length > 10 && text.substring(0, 80) === saved.anchorText) {
-              el.scrollIntoView({ block: "start" });
-              restored = true;
-              return;
-            }
-          }
-          // Partial match
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i] as HTMLElement;
-            const text = (el.textContent || "").trim();
-            if (text.length > 10 && saved.anchorText.length > 20 &&
-                text.includes(saved.anchorText.substring(0, 40))) {
-              el.scrollIntoView({ block: "start" });
-              restored = true;
-              return;
-            }
-          }
-        }
+  private saveReadingPosition(): Promise<void> {
+    if (!this.filePath || !this.iframe || this.suppressSave) return Promise.resolve();
 
-        // Fraction fallback
-        if (saved.scrollFraction > 0) {
-          const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
-          if (maxScroll > 50) {
-            doc.documentElement.scrollTop = maxScroll * saved.scrollFraction;
-            restored = true;
-          }
-        }
-      } catch { /* ignore */ }
-    };
-
-    for (const d of delays) {
-      setTimeout(tryOnce, d);
-    }
-  }
-
-  private saveReadingPosition(): void {
-    if (!this.filePath || !this.iframe) return;
-    let scrollFraction = 0;
-    let anchorText = "";
     try {
       const doc = this.iframe.contentDocument;
       if (doc) {
         const scrollTop = doc.documentElement.scrollTop;
         const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
-        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
 
-        // Find the first visible text element for robust anchoring
-        const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div");
-        for (let i = 0; i < elements.length; i++) {
-          const el = elements[i] as HTMLElement;
-          const rect = el.getBoundingClientRect();
-          // Element is at or below the top of the viewport
-          if (rect.top >= -10 && el.textContent && el.textContent.trim().length > 10) {
-            anchorText = el.textContent.trim().substring(0, 80);
-            break;
+        if (maxScroll > 0 && scrollTop > 0) {
+          const scrollFraction = scrollTop / maxScroll;
+
+          // Find anchor text
+          let anchorText = "";
+          const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+          let bestEl: HTMLElement | null = null;
+          let bestDist = Infinity;
+          for (let i = 0; i < elements.length; i++) {
+            const el = elements[i] as HTMLElement;
+            const rect = el.getBoundingClientRect();
+            const text = (el.textContent || "").trim();
+            if (text.length > 10 && rect.bottom > 0) {
+              const dist = Math.abs(rect.top);
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestEl = el;
+              }
+            }
           }
+          if (bestEl) {
+            anchorText = (bestEl.textContent || "").trim().substring(0, 80);
+          }
+
+          // Update cached values
+          this.lastGoodFraction = scrollFraction;
+          this.lastGoodAnchor = anchorText;
+
+          // Write to file
+          return this.annotationMgr.savePosition(this.filePath, {
+            chapter: this.currentChapter,
+            scrollFraction,
+            anchorText,
+          });
         }
       }
     } catch { /* ignore */ }
 
-    this.plugin.saveReadingPosition(this.filePath, {
-      chapter: this.currentChapter,
-      scrollFraction,
-      anchorText,
-    });
+    // Don't write anything if we couldn't read a valid position
+    return Promise.resolve();
   }
 
   // ─── Resource Resolution ──────────────────────────────────────
@@ -881,12 +974,25 @@ export class EpubView extends ItemView {
 
   private navigateChapter(delta: number): void {
     if (!this.epub) return;
-    this.saveReadingPosition();
     const next = this.currentChapter + delta;
     if (next >= 0 && next < this.epub.spine.length) {
       this.currentChapter = next;
+      // Force-save the new chapter at scroll position 0
+      this.forceChapterSave();
       this.renderChapter();
     }
+  }
+
+  /** Save current chapter with frac=0 (used after chapter navigation) */
+  private forceChapterSave(): void {
+    if (!this.filePath) return;
+    this.lastGoodFraction = 0;
+    this.lastGoodAnchor = "";
+    this.annotationMgr.savePosition(this.filePath, {
+      chapter: this.currentChapter,
+      scrollFraction: 0,
+      anchorText: "",
+    });
   }
 
   private currentThemeIdx = 0;
@@ -911,7 +1017,6 @@ export class EpubView extends ItemView {
   // ─── Lifecycle ────────────────────────────────────────────────
 
   async onClose(): Promise<void> {
-    this.saveReadingPosition();
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
     }
@@ -937,8 +1042,6 @@ export class EpubView extends ItemView {
       }
       await this.loadEpubFile(this.filePath);
     }
-
-    await super.setState(state, result as any);
   }
 }
 

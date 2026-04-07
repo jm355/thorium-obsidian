@@ -2524,6 +2524,7 @@ async function getChapterContent(epub, href) {
 // annotations.ts
 var import_obsidian = require("obsidian");
 var ANNOTATION_FOLDER = "epub-annotations";
+var POSITION_FILENAME = "_reading-position.md";
 var AnnotationManager = class {
   app;
   constructor(app) {
@@ -2539,9 +2540,80 @@ var AnnotationManager = class {
   }
   /** Ensure the annotation folder exists */
   async ensureFolder(path) {
-    const existing = this.app.vault.getAbstractFileByPath(path);
-    if (!existing) {
-      await this.app.vault.createFolder(path);
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (!existing) {
+        await this.app.vault.createFolder(path);
+      }
+    } catch {
+    }
+  }
+  // ─── Reading Position ─────────────────────────────────────────
+  /** Save reading position to a markdown file */
+  async savePosition(bookFile, pos) {
+    const folderPath = this.bookFolderPath(bookFile);
+    await this.ensureFolder((0, import_obsidian.normalizePath)(ANNOTATION_FOLDER));
+    await this.ensureFolder(folderPath);
+    const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${POSITION_FILENAME}`);
+    const content = [
+      "---",
+      `bookFile: "${bookFile}"`,
+      `chapter: ${pos.chapter}`,
+      `scrollFraction: ${pos.scrollFraction}`,
+      `anchorText: "${(pos.anchorText || "").replace(/"/g, '\\"').replace(/\n/g, "\\n")}"`,
+      `updated: "${(/* @__PURE__ */ new Date()).toISOString()}"`,
+      "---",
+      "",
+      "This file tracks your reading position. It is managed automatically by the Thorium EPUB Reader plugin.",
+      ""
+    ].join("\n");
+    try {
+      const existing = this.app.vault.getAbstractFileByPath(filePath);
+      if (existing && existing instanceof import_obsidian.TFile) {
+        await this.app.vault.modify(existing, content);
+      } else {
+        if (existing) {
+          await this.app.vault.delete(existing);
+        }
+        await this.app.vault.create(filePath, content);
+      }
+    } catch (e) {
+      try {
+        const file = this.app.vault.getAbstractFileByPath(filePath);
+        if (file && file instanceof import_obsidian.TFile) {
+          await this.app.vault.modify(file, content);
+        }
+      } catch (e2) {
+        throw new Error(`Position save failed: ${e}, retry: ${e2}`);
+      }
+    }
+  }
+  /** Load reading position from the markdown file */
+  async loadPosition(bookFile) {
+    const folderPath = this.bookFolderPath(bookFile);
+    const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${POSITION_FILENAME}`);
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (!file || !(file instanceof import_obsidian.TFile)) return null;
+    try {
+      const content = await this.app.vault.read(file);
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fmMatch) return null;
+      const fm = fmMatch[1];
+      const get = (key) => {
+        const m = fm.match(new RegExp(`^${key}:\\s*"(.*?)"\\s*$`, "m"));
+        return m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, "\n") : "";
+      };
+      const getNum = (key) => {
+        const m = fm.match(new RegExp(`^${key}:\\s*([\\d.]+)`, "m"));
+        return m ? parseFloat(m[1]) : 0;
+      };
+      return {
+        chapter: getNum("chapter"),
+        scrollFraction: getNum("scrollFraction"),
+        anchorText: get("anchorText") || void 0
+      };
+    } catch {
+      return null;
     }
   }
   /** Generate a unique annotation filename */
@@ -2598,6 +2670,7 @@ ${quote}
     const annotations = [];
     for (const child of folder.children) {
       if (!(child instanceof import_obsidian.TFile) || child.extension !== "md") continue;
+      if (child.name === "_reading-position.md") continue;
       try {
         const content = await this.app.vault.read(child);
         const ann = this.parseAnnotationFile(child.path, content);
@@ -2697,6 +2770,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   chapterAnnotations = [];
   savePositionTimer = null;
   pendingRestore = null;
+  suppressSave = false;
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -2730,6 +2804,13 @@ var EpubView = class extends import_obsidian2.ItemView {
     fontDown.addEventListener("click", () => this.adjustFontSize(-2));
     const fontUp = toolbar.createEl("button", { text: "A+", cls: "thorium-btn" });
     fontUp.addEventListener("click", () => this.adjustFontSize(2));
+    const bookmarkBtn = toolbar.createEl("button", { text: "\u{1F516}", cls: "thorium-btn" });
+    bookmarkBtn.addEventListener("click", () => {
+      this.suppressSave = false;
+      this.saveReadingPosition().then(() => {
+        new import_obsidian2.Notice("Position saved manually");
+      });
+    });
     const contentWrapper = container.createDiv({ cls: "thorium-content-wrapper" });
     this.tocContainer = contentWrapper.createDiv({ cls: "thorium-toc-panel" });
     this.tocContainer.style.display = "none";
@@ -2750,7 +2831,7 @@ var EpubView = class extends import_obsidian2.ItemView {
       this.epub = await parseEpub(data);
       this.buildToc();
       this.leaf.updateHeader();
-      const saved = this.plugin.getReadingPosition(this.filePath);
+      const saved = await this.annotationMgr.loadPosition(this.filePath);
       if (saved) {
         this.currentChapter = saved.chapter;
         if (saved.anchorText || saved.scrollFraction > 0) {
@@ -2779,6 +2860,7 @@ var EpubView = class extends import_obsidian2.ItemView {
         });
         entry.addEventListener("click", () => {
           this.currentChapter = idx;
+          this.forceChapterSave();
           this.renderChapter();
         });
       });
@@ -2799,6 +2881,7 @@ var EpubView = class extends import_obsidian2.ItemView {
         );
         if (idx >= 0) {
           this.currentChapter = idx;
+          this.forceChapterSave();
           this.renderChapter(item.href.includes("#") ? item.href.split("#")[1] : void 0);
         }
       });
@@ -2818,7 +2901,6 @@ var EpubView = class extends import_obsidian2.ItemView {
     if (!this.epub || !this.iframe) return;
     const spineItem = this.epub.spine[this.currentChapter];
     if (!spineItem) return;
-    this.saveReadingPosition();
     let html = await getChapterContent(this.epub, spineItem.href);
     html = await this.resolveResources(html, spineItem.href);
     this.chapterAnnotations = await this.annotationMgr.loadChapterAnnotations(
@@ -2932,18 +3014,69 @@ var EpubView = class extends import_obsidian2.ItemView {
     } else {
       html = styleOverride + html;
     }
+    const restoreData = this.pendingRestore;
+    this.pendingRestore = null;
+    let scrollRestoreScript = "";
+    if (restoreData && (restoreData.scrollFraction > 0 || restoreData.anchorText)) {
+      const anchorJson = restoreData.anchorText ? JSON.stringify(restoreData.anchorText) : "null";
+      const frac = restoreData.scrollFraction;
+      scrollRestoreScript = `
+        ;(function(){
+          var anchor = ${anchorJson};
+          var frac = ${frac};
+          var done = false;
+          function doRestore() {
+            if (done) return;
+            if (anchor) {
+              var els = document.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,blockquote");
+              for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || "").trim();
+                if (t.length > 10 && t.substring(0, 80) === anchor) {
+                  document.documentElement.scrollTop = els[i].offsetTop;
+                  window.scrollTo(0, els[i].offsetTop);
+                  done = true;
+                  return;
+                }
+              }
+              for (var i = 0; i < els.length; i++) {
+                var t = (els[i].textContent || "").trim();
+                if (t.length > 10 && anchor.length > 20 && t.indexOf(anchor.substring(0, 40)) >= 0) {
+                  document.documentElement.scrollTop = els[i].offsetTop;
+                  window.scrollTo(0, els[i].offsetTop);
+                  done = true;
+                  return;
+                }
+              }
+            }
+            if (frac > 0) {
+              var max = document.documentElement.scrollHeight - document.documentElement.clientHeight;
+              if (max > 50) {
+                var target = max * frac;
+                document.documentElement.scrollTop = target;
+                window.scrollTo(0, target);
+                done = true;
+              }
+            }
+          }
+          setTimeout(doRestore, 100);
+          setTimeout(doRestore, 500);
+          setTimeout(doRestore, 1200);
+          window.addEventListener("load", function(){ setTimeout(doRestore, 200); });
+        })();
+      `;
+    }
     const toolbarHtml = `
       <div id="thorium-sel-toolbar"></div>
       <div id="thorium-hl-tooltip"></div>
-      <script>${annotationScript}<\/script>
+      <script>${annotationScript}${scrollRestoreScript}<\/script>
     `;
     if (html.includes("</body>")) {
       html = html.replace("</body>", toolbarHtml + "</body>");
     } else {
       html = html + toolbarHtml;
     }
-    this.iframe.srcdoc = html;
     this.setupIframeListener();
+    const isRestoring = !!scrollRestoreScript;
     this.iframe.onload = () => {
       if (fragment) {
         try {
@@ -2952,18 +3085,26 @@ var EpubView = class extends import_obsidian2.ItemView {
         } catch {
         }
       }
-      if (this.pendingRestore) {
-        const restore = this.pendingRestore;
-        this.pendingRestore = null;
-        this.doScrollRestore(restore);
-      }
-      try {
-        this.iframe?.contentDocument?.addEventListener("scroll", () => {
-          this.debounceSavePosition();
-        });
-      } catch {
+      const attachScrollListener = () => {
+        try {
+          const iframeDoc = this.iframe?.contentDocument;
+          if (iframeDoc) {
+            iframeDoc.addEventListener("scroll", () => this.debounceSavePosition());
+          }
+        } catch {
+        }
+      };
+      if (isRestoring) {
+        this.suppressSave = true;
+        setTimeout(() => {
+          this.suppressSave = false;
+          attachScrollListener();
+        }, 3e3);
+      } else {
+        attachScrollListener();
       }
     };
+    this.iframe.srcdoc = html;
     if (this.chapterTitle) {
       const tocLabel = this.findTocLabel(spineItem.href);
       this.chapterTitle.textContent = tocLabel || `${this.currentChapter + 1} / ${this.epub.spine.length}`;
@@ -3255,6 +3396,44 @@ var EpubView = class extends import_obsidian2.ItemView {
     };
     window.addEventListener("message", this.messageHandler);
   }
+  /** Capture the current scroll position and set it as pendingRestore for the next renderChapter */
+  captureCurrentPosition() {
+    if (!this.iframe) return;
+    let scrollFraction = 0;
+    let anchorText = "";
+    try {
+      const doc = this.iframe.contentDocument;
+      if (doc) {
+        const scrollTop = doc.documentElement.scrollTop;
+        const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
+        const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+        let bestEl = null;
+        let bestDist = Infinity;
+        for (let i = 0; i < elements.length; i++) {
+          const el = elements[i];
+          const rect = el.getBoundingClientRect();
+          const text = (el.textContent || "").trim();
+          if (text.length > 10 && rect.bottom > 0) {
+            const dist = Math.abs(rect.top);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestEl = el;
+            }
+          }
+        }
+        if (bestEl) {
+          anchorText = (bestEl.textContent || "").trim().substring(0, 80);
+        }
+      }
+    } catch {
+    }
+    if (scrollFraction > 0 || anchorText) {
+      this.lastGoodFraction = scrollFraction;
+      this.lastGoodAnchor = anchorText;
+    }
+    this.pendingRestore = { anchorText: anchorText || this.lastGoodAnchor, scrollFraction: scrollFraction || this.lastGoodFraction };
+  }
   async handleCreateAnnotation(data) {
     if (!this.epub) return;
     const chapterTitle = this.findTocLabel(this.epub.spine[this.currentChapter]?.href || "") || `Chapter ${this.currentChapter + 1}`;
@@ -3275,6 +3454,7 @@ var EpubView = class extends import_obsidian2.ItemView {
         note
       });
       new import_obsidian2.Notice("Highlight saved");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new import_obsidian2.Notice(`Failed to save highlight: ${e.message}`);
@@ -3287,6 +3467,7 @@ var EpubView = class extends import_obsidian2.ItemView {
     try {
       await this.annotationMgr.updateAnnotationNote(ann, newNote);
       new import_obsidian2.Notice("Note updated");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new import_obsidian2.Notice(`Failed to update note: ${e.message}`);
@@ -3298,6 +3479,7 @@ var EpubView = class extends import_obsidian2.ItemView {
     try {
       await this.annotationMgr.deleteAnnotation(ann);
       new import_obsidian2.Notice("Highlight deleted");
+      this.captureCurrentPosition();
       await this.renderChapter();
     } catch (e) {
       new import_obsidian2.Notice(`Failed to delete highlight: ${e.message}`);
@@ -3312,78 +3494,55 @@ var EpubView = class extends import_obsidian2.ItemView {
   // ─── Reading Position ─────────────────────────────────────────
   debounceSavePosition() {
     if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
-    this.savePositionTimer = setTimeout(() => this.saveReadingPosition(), 1e3);
+    this.savePositionTimer = setTimeout(() => {
+      this.saveReadingPosition().catch((e) => {
+        new import_obsidian2.Notice(`Save failed: ${e}`, 5e3);
+      });
+    }, 1e3);
   }
-  doScrollRestore(saved) {
-    const delays = [0, 200, 500, 1e3];
-    let restored = false;
-    const tryOnce = () => {
-      if (restored) return;
-      try {
-        const doc = this.iframe?.contentDocument;
-        if (!doc) return;
-        if (saved.anchorText) {
-          const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div, span");
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i];
-            const text = (el.textContent || "").trim();
-            if (text.length > 10 && text.substring(0, 80) === saved.anchorText) {
-              el.scrollIntoView({ block: "start" });
-              restored = true;
-              return;
-            }
-          }
-          for (let i = 0; i < elements.length; i++) {
-            const el = elements[i];
-            const text = (el.textContent || "").trim();
-            if (text.length > 10 && saved.anchorText.length > 20 && text.includes(saved.anchorText.substring(0, 40))) {
-              el.scrollIntoView({ block: "start" });
-              restored = true;
-              return;
-            }
-          }
-        }
-        if (saved.scrollFraction > 0) {
-          const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
-          if (maxScroll > 50) {
-            doc.documentElement.scrollTop = maxScroll * saved.scrollFraction;
-            restored = true;
-          }
-        }
-      } catch {
-      }
-    };
-    for (const d of delays) {
-      setTimeout(tryOnce, d);
-    }
-  }
+  savePositionCount = 0;
+  lastGoodFraction = 0;
+  lastGoodAnchor = "";
   saveReadingPosition() {
-    if (!this.filePath || !this.iframe) return;
-    let scrollFraction = 0;
-    let anchorText = "";
+    if (!this.filePath || !this.iframe || this.suppressSave) return Promise.resolve();
     try {
       const doc = this.iframe.contentDocument;
       if (doc) {
         const scrollTop = doc.documentElement.scrollTop;
         const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
-        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
-        const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote, div");
-        for (let i = 0; i < elements.length; i++) {
-          const el = elements[i];
-          const rect = el.getBoundingClientRect();
-          if (rect.top >= -10 && el.textContent && el.textContent.trim().length > 10) {
-            anchorText = el.textContent.trim().substring(0, 80);
-            break;
+        if (maxScroll > 0 && scrollTop > 0) {
+          const scrollFraction = scrollTop / maxScroll;
+          let anchorText = "";
+          const elements = doc.body.querySelectorAll("p, h1, h2, h3, h4, h5, h6, li, blockquote");
+          let bestEl = null;
+          let bestDist = Infinity;
+          for (let i = 0; i < elements.length; i++) {
+            const el = elements[i];
+            const rect = el.getBoundingClientRect();
+            const text = (el.textContent || "").trim();
+            if (text.length > 10 && rect.bottom > 0) {
+              const dist = Math.abs(rect.top);
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestEl = el;
+              }
+            }
           }
+          if (bestEl) {
+            anchorText = (bestEl.textContent || "").trim().substring(0, 80);
+          }
+          this.lastGoodFraction = scrollFraction;
+          this.lastGoodAnchor = anchorText;
+          return this.annotationMgr.savePosition(this.filePath, {
+            chapter: this.currentChapter,
+            scrollFraction,
+            anchorText
+          });
         }
       }
     } catch {
     }
-    this.plugin.saveReadingPosition(this.filePath, {
-      chapter: this.currentChapter,
-      scrollFraction,
-      anchorText
-    });
+    return Promise.resolve();
   }
   // ─── Resource Resolution ──────────────────────────────────────
   async resolveResources(html, chapterHref) {
@@ -3462,12 +3621,23 @@ var EpubView = class extends import_obsidian2.ItemView {
   }
   navigateChapter(delta) {
     if (!this.epub) return;
-    this.saveReadingPosition();
     const next = this.currentChapter + delta;
     if (next >= 0 && next < this.epub.spine.length) {
       this.currentChapter = next;
+      this.forceChapterSave();
       this.renderChapter();
     }
+  }
+  /** Save current chapter with frac=0 (used after chapter navigation) */
+  forceChapterSave() {
+    if (!this.filePath) return;
+    this.lastGoodFraction = 0;
+    this.lastGoodAnchor = "";
+    this.annotationMgr.savePosition(this.filePath, {
+      chapter: this.currentChapter,
+      scrollFraction: 0,
+      anchorText: ""
+    });
   }
   currentThemeIdx = 0;
   themes = ["light", "sepia", "dark"];
@@ -3487,7 +3657,6 @@ var EpubView = class extends import_obsidian2.ItemView {
   }
   // ─── Lifecycle ────────────────────────────────────────────────
   async onClose() {
-    this.saveReadingPosition();
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
     }
@@ -3506,7 +3675,6 @@ var EpubView = class extends import_obsidian2.ItemView {
       }
       await this.loadEpubFile(this.filePath);
     }
-    await super.setState(state, result);
   }
 };
 var NoteModal = class extends import_obsidian2.Modal {
@@ -3574,9 +3742,9 @@ var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
   getReadingPosition(filePath) {
     return this.settings.readingPositions[filePath] || null;
   }
-  saveReadingPosition(filePath, pos) {
+  async saveReadingPosition(filePath, pos) {
     this.settings.readingPositions[filePath] = pos;
-    this.saveSettings();
+    await this.saveSettings();
   }
   // ─── File picker ──────────────────────────────────────────────
   async openEpubFilePicker() {
