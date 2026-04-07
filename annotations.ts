@@ -162,10 +162,20 @@ export class AnnotationManager {
     const filePath = normalizePath(`${folderPath}/${fileName}`);
     const id = filePath;
 
+    // Build a back-link to the exact spot: [[My Book.epub#ch3:first 40 chars of selection]]
+    const bookBasename = params.bookFile.split("/").pop() || params.bookFile;
+    const anchorText = params.selectedText
+      .substring(0, 40)
+      .replace(/[\[\]|#\n\r]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const epubLink = `[[${bookBasename}#ch${params.chapter}:${anchorText}]]`;
+
     const frontmatter = [
       "---",
       `book: "${params.bookTitle}"`,
       `bookFile: "${params.bookFile}"`,
+      `link: "${epubLink}"`,
       `chapter: ${params.chapter}`,
       `chapterTitle: "${params.chapterTitle.replace(/"/g, '\\"')}"`,
       `color: "${params.color}"`,
@@ -177,8 +187,7 @@ export class AnnotationManager {
       "",
     ].join("\n");
 
-    const quote = `> ${params.selectedText.split("\n").join("\n> ")}\n`;
-    const body = params.note ? `\n${quote}\n${params.note}\n` : `\n${quote}\n`;
+    const body = params.note ? `\n${params.note}\n` : "";
 
     await this.app.vault.create(filePath, frontmatter + body);
 

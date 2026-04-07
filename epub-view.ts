@@ -6,6 +6,7 @@ import type ThoriumReaderPlugin from "./main";
 export const EPUB_VIEW_TYPE = "thorium-epub-view";
 
 export class EpubView extends ItemView {
+  navigation = true;
   plugin: ThoriumReaderPlugin;
   epub: ParsedEpub | null = null;
   currentChapter = 0;
@@ -23,6 +24,7 @@ export class EpubView extends ItemView {
   private chapterAnnotations: Annotation[] = [];
   private savePositionTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingRestore: { anchorText?: string; scrollFraction: number } | null = null;
+  private pendingSubpath = "";
   private suppressSave = false;
   private themeChangeRef: EventRef | null = null;
 
@@ -112,6 +114,14 @@ export class EpubView extends ItemView {
 
       this.buildToc();
       this.leaf.updateHeader();
+
+      // If a subpath was queued (from [[book.epub#fragment]] link), navigate there
+      if (this.pendingSubpath) {
+        const sp = this.pendingSubpath;
+        this.pendingSubpath = "";
+        await this.navigateToSubpath(sp);
+        return;
+      }
 
       // Restore saved reading position
       const saved = await this.annotationMgr.loadPosition(this.filePath);
@@ -518,9 +528,14 @@ export class EpubView extends ItemView {
       note: a.note,
     }));
 
+    const bookBasename = this.filePath.split("/").pop() || this.filePath;
+    const currentChapter = this.currentChapter;
+
     return `
     (function() {
       var highlights = ${JSON.stringify(highlights)};
+      var bookBasename = ${JSON.stringify(bookBasename)};
+      var currentChapter = ${JSON.stringify(currentChapter)};
       var colors = ["yellow", "green", "blue", "pink", "orange"];
 
       function applyHighlights() {
@@ -647,14 +662,26 @@ export class EpubView extends ItemView {
           toolbar.appendChild(dot);
         });
 
-        var noteBtn = document.createElement("button");
-        noteBtn.textContent = "Note";
-        noteBtn.addEventListener("pointerdown", function(e) {
+        var copyBtn = document.createElement("button");
+        copyBtn.textContent = "Copy Link";
+        copyBtn.addEventListener("pointerdown", function(e) {
           e.preventDefault();
           e.stopPropagation();
-          createHighlight("yellow", true);
+          if (!cachedSelection || !cachedSelection.selectedText) return;
+          var raw = cachedSelection.selectedText.substring(0, 40);
+          var anchor = raw.split("").map(function(c) {
+            var code = c.charCodeAt(0);
+            // Replace [ ] | # and control chars (< 32) with space
+            return (code === 91 || code === 93 || code === 124 || code === 35 || code < 32) ? " " : c;
+          }).join("").replace(/ {2,}/g, " ").trim();
+          var link = "[[" + bookBasename + "#ch" + currentChapter + ":" + anchor + "]]";
+          window.parent.postMessage({ type: "thorium-copy-link", link: link }, "*");
+          var sel2 = window.getSelection();
+          if (sel2) sel2.removeAllRanges();
+          cachedSelection = null;
+          hideSelectionToolbar();
         });
-        toolbar.appendChild(noteBtn);
+        toolbar.appendChild(copyBtn);
       }
 
       function hideSelectionToolbar() {
@@ -795,6 +822,9 @@ export class EpubView extends ItemView {
         await this.handleEditAnnotation(data.id);
       } else if (data.type === "thorium-delete-annotation") {
         await this.handleDeleteAnnotation(data.id);
+      } else if (data.type === "thorium-copy-link") {
+        await navigator.clipboard.writeText(data.link);
+        new Notice("Link copied");
       }
     };
 
@@ -1144,6 +1174,91 @@ export class EpubView extends ItemView {
       }
       await this.loadEpubFile(this.filePath);
     }
+  }
+
+  // Called by Obsidian when a link like [[book.epub#ch3]] is clicked
+  async setEphemeralState(state: Record<string, unknown>): Promise<void> {
+    const subpath = typeof state.subpath === "string" ? state.subpath : "";
+    if (!subpath) return;
+    if (this.epub) {
+      await this.navigateToSubpath(subpath);
+    } else {
+      // epub not loaded yet — will be applied in loadEpubFile
+      this.pendingSubpath = subpath;
+    }
+  }
+
+  // ─── Subpath Navigation ───────────────────────────────────────
+
+  /** Navigate to a subpath fragment (from [[book.epub#fragment]] links).
+   *
+   * Supported formats:
+   *   ch{N}       — spine index (e.g. ch0, ch3)
+   *   {toc-slug}  — TOC label slugified (e.g. "the-beginning" for "The Beginning")
+   *   {html-id}   — HTML anchor id within the current chapter (fallback)
+   */
+  async navigateToSubpath(subpath: string): Promise<void> {
+    if (!this.epub) return;
+    const fragment = subpath.startsWith("#") ? subpath.slice(1) : subpath;
+
+    // ch{N} or ch{N}:{anchorText} — direct spine index with optional text anchor
+    const chMatch = fragment.match(/^ch(\d+)(?::(.+))?$/i);
+    if (chMatch) {
+      const idx = parseInt(chMatch[1], 10);
+      const anchor = chMatch[2]?.trim() || "";
+      if (idx >= 0 && idx < this.epub.spine.length) {
+        this.currentChapter = idx;
+        this.pendingRestore = anchor ? { anchorText: anchor, scrollFraction: 0 } : null;
+        await this.renderChapter();
+        return;
+      }
+    }
+
+    // Slug match against TOC labels
+    const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const fragSlug = slug(fragment);
+
+    const searchToc = (items: TocItem[]): { chapter: number; anchor?: string } | null => {
+      for (const item of items) {
+        if (slug(item.label) === fragSlug) {
+          const cleanHref = item.href.split("#")[0];
+          const idx = this.epub!.spine.findIndex(
+            (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+          );
+          if (idx >= 0) {
+            return {
+              chapter: idx,
+              anchor: item.href.includes("#") ? item.href.split("#")[1] : undefined,
+            };
+          }
+        }
+        const child = searchToc(item.children);
+        if (child) return child;
+      }
+      return null;
+    };
+
+    const tocResult = searchToc(this.epub.toc);
+    if (tocResult) {
+      this.currentChapter = tocResult.chapter;
+      this.pendingRestore = null;
+      await this.renderChapter(tocResult.anchor);
+      return;
+    }
+
+    // Spine ID or href substring match
+    const spineIdx = this.epub.spine.findIndex(
+      (s) => s.id === fragment || slug(s.id || "") === fragSlug || s.href.includes(fragment)
+    );
+    if (spineIdx >= 0) {
+      this.currentChapter = spineIdx;
+      this.pendingRestore = null;
+      await this.renderChapter();
+      return;
+    }
+
+    // Treat as HTML anchor id within the current chapter
+    await this.renderChapter(fragment);
   }
 }
 

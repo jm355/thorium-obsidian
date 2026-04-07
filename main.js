@@ -2686,10 +2686,14 @@ var AnnotationManager = class {
     const fileName = this.annotationFileName({ ...params, created });
     const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${fileName}`);
     const id = filePath;
+    const bookBasename = params.bookFile.split("/").pop() || params.bookFile;
+    const anchorText = params.selectedText.substring(0, 40).replace(/[\[\]|#\n\r]/g, " ").replace(/\s+/g, " ").trim();
+    const epubLink = `[[${bookBasename}#ch${params.chapter}:${anchorText}]]`;
     const frontmatter = [
       "---",
       `book: "${params.bookTitle}"`,
       `bookFile: "${params.bookFile}"`,
+      `link: "${epubLink}"`,
       `chapter: ${params.chapter}`,
       `chapterTitle: "${params.chapterTitle.replace(/"/g, '\\"')}"`,
       `color: "${params.color}"`,
@@ -2700,14 +2704,9 @@ var AnnotationManager = class {
       "---",
       ""
     ].join("\n");
-    const quote = `> ${params.selectedText.split("\n").join("\n> ")}
-`;
     const body = params.note ? `
-${quote}
 ${params.note}
-` : `
-${quote}
-`;
+` : "";
     await this.app.vault.create(filePath, frontmatter + body);
     return {
       id,
@@ -2812,6 +2811,7 @@ ${quote}
 // epub-view.ts
 var EPUB_VIEW_TYPE = "thorium-epub-view";
 var EpubView = class extends import_obsidian2.ItemView {
+  navigation = true;
   plugin;
   epub = null;
   currentChapter = 0;
@@ -2827,6 +2827,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   chapterAnnotations = [];
   savePositionTimer = null;
   pendingRestore = null;
+  pendingSubpath = "";
   suppressSave = false;
   themeChangeRef = null;
   constructor(leaf, plugin) {
@@ -2891,6 +2892,12 @@ var EpubView = class extends import_obsidian2.ItemView {
       this.epub = await parseEpub(data);
       this.buildToc();
       this.leaf.updateHeader();
+      if (this.pendingSubpath) {
+        const sp = this.pendingSubpath;
+        this.pendingSubpath = "";
+        await this.navigateToSubpath(sp);
+        return;
+      }
       const saved = await this.annotationMgr.loadPosition(this.filePath);
       if (saved) {
         this.currentChapter = saved.chapter;
@@ -3243,9 +3250,13 @@ var EpubView = class extends import_obsidian2.ItemView {
       color: a.color,
       note: a.note
     }));
+    const bookBasename = this.filePath.split("/").pop() || this.filePath;
+    const currentChapter = this.currentChapter;
     return `
     (function() {
       var highlights = ${JSON.stringify(highlights)};
+      var bookBasename = ${JSON.stringify(bookBasename)};
+      var currentChapter = ${JSON.stringify(currentChapter)};
       var colors = ["yellow", "green", "blue", "pink", "orange"];
 
       function applyHighlights() {
@@ -3372,14 +3383,26 @@ var EpubView = class extends import_obsidian2.ItemView {
           toolbar.appendChild(dot);
         });
 
-        var noteBtn = document.createElement("button");
-        noteBtn.textContent = "Note";
-        noteBtn.addEventListener("pointerdown", function(e) {
+        var copyBtn = document.createElement("button");
+        copyBtn.textContent = "Copy Link";
+        copyBtn.addEventListener("pointerdown", function(e) {
           e.preventDefault();
           e.stopPropagation();
-          createHighlight("yellow", true);
+          if (!cachedSelection || !cachedSelection.selectedText) return;
+          var raw = cachedSelection.selectedText.substring(0, 40);
+          var anchor = raw.split("").map(function(c) {
+            var code = c.charCodeAt(0);
+            // Replace [ ] | # and control chars (< 32) with space
+            return (code === 91 || code === 93 || code === 124 || code === 35 || code < 32) ? " " : c;
+          }).join("").replace(/ {2,}/g, " ").trim();
+          var link = "[[" + bookBasename + "#ch" + currentChapter + ":" + anchor + "]]";
+          window.parent.postMessage({ type: "thorium-copy-link", link: link }, "*");
+          var sel2 = window.getSelection();
+          if (sel2) sel2.removeAllRanges();
+          cachedSelection = null;
+          hideSelectionToolbar();
         });
-        toolbar.appendChild(noteBtn);
+        toolbar.appendChild(copyBtn);
       }
 
       function hideSelectionToolbar() {
@@ -3515,6 +3538,9 @@ var EpubView = class extends import_obsidian2.ItemView {
         await this.handleEditAnnotation(data.id);
       } else if (data.type === "thorium-delete-annotation") {
         await this.handleDeleteAnnotation(data.id);
+      } else if (data.type === "thorium-copy-link") {
+        await navigator.clipboard.writeText(data.link);
+        new import_obsidian2.Notice("Link copied");
       }
     };
     window.addEventListener("message", this.messageHandler);
@@ -3811,6 +3837,77 @@ var EpubView = class extends import_obsidian2.ItemView {
       }
       await this.loadEpubFile(this.filePath);
     }
+  }
+  // Called by Obsidian when a link like [[book.epub#ch3]] is clicked
+  async setEphemeralState(state) {
+    const subpath = typeof state.subpath === "string" ? state.subpath : "";
+    if (!subpath) return;
+    if (this.epub) {
+      await this.navigateToSubpath(subpath);
+    } else {
+      this.pendingSubpath = subpath;
+    }
+  }
+  // ─── Subpath Navigation ───────────────────────────────────────
+  /** Navigate to a subpath fragment (from [[book.epub#fragment]] links).
+   *
+   * Supported formats:
+   *   ch{N}       — spine index (e.g. ch0, ch3)
+   *   {toc-slug}  — TOC label slugified (e.g. "the-beginning" for "The Beginning")
+   *   {html-id}   — HTML anchor id within the current chapter (fallback)
+   */
+  async navigateToSubpath(subpath) {
+    if (!this.epub) return;
+    const fragment = subpath.startsWith("#") ? subpath.slice(1) : subpath;
+    const chMatch = fragment.match(/^ch(\d+)(?::(.+))?$/i);
+    if (chMatch) {
+      const idx = parseInt(chMatch[1], 10);
+      const anchor = chMatch[2]?.trim() || "";
+      if (idx >= 0 && idx < this.epub.spine.length) {
+        this.currentChapter = idx;
+        this.pendingRestore = anchor ? { anchorText: anchor, scrollFraction: 0 } : null;
+        await this.renderChapter();
+        return;
+      }
+    }
+    const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const fragSlug = slug(fragment);
+    const searchToc = (items) => {
+      for (const item of items) {
+        if (slug(item.label) === fragSlug) {
+          const cleanHref = item.href.split("#")[0];
+          const idx = this.epub.spine.findIndex(
+            (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+          );
+          if (idx >= 0) {
+            return {
+              chapter: idx,
+              anchor: item.href.includes("#") ? item.href.split("#")[1] : void 0
+            };
+          }
+        }
+        const child = searchToc(item.children);
+        if (child) return child;
+      }
+      return null;
+    };
+    const tocResult = searchToc(this.epub.toc);
+    if (tocResult) {
+      this.currentChapter = tocResult.chapter;
+      this.pendingRestore = null;
+      await this.renderChapter(tocResult.anchor);
+      return;
+    }
+    const spineIdx = this.epub.spine.findIndex(
+      (s) => s.id === fragment || slug(s.id || "") === fragSlug || s.href.includes(fragment)
+    );
+    if (spineIdx >= 0) {
+      this.currentChapter = spineIdx;
+      this.pendingRestore = null;
+      await this.renderChapter();
+      return;
+    }
+    await this.renderChapter(fragment);
   }
 };
 var NoteModal = class extends import_obsidian2.Modal {
