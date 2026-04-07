@@ -39,4 +39,6 @@ Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/p
 If you run a self-hosted [Thorium Web](https://github.com/edrlab/thorium-web) instance with the Go Toolkit backend, you can point the plugin at it in Settings for the full Thorium Web experience (Web Publication Manifest support, advanced navigation, accessibility features).
 
 ## Future Improvements
-- Search the book
+Not sure I'll ever get to these, this plugin already does everything my old epub reader did and I didn't really miss not having these two features.
+- Search the book?
+- Keep list of book positions that are navigatable with obsidians back/forward buttons?
