@@ -2523,12 +2523,13 @@ async function getChapterContent(epub, href) {
 
 // annotations.ts
 var import_obsidian = require("obsidian");
-var ANNOTATION_FOLDER = "epub-annotations";
 var POSITION_FILENAME = "_reading-position.md";
 var AnnotationManager = class {
   app;
-  constructor(app) {
+  getAnnotationFolder;
+  constructor(app, annotationFolder = "epub-annotations") {
     this.app = app;
+    this.getAnnotationFolder = typeof annotationFolder === "function" ? annotationFolder : () => annotationFolder;
   }
   /** Get the folder name for a given book (based on epub filename without extension) */
   bookFolderName(bookFile) {
@@ -2536,7 +2537,7 @@ var AnnotationManager = class {
     return basename.replace(/\.epub$/i, "");
   }
   bookFolderPath(bookFile) {
-    return (0, import_obsidian.normalizePath)(`${ANNOTATION_FOLDER}/${this.bookFolderName(bookFile)}`);
+    return (0, import_obsidian.normalizePath)(`${this.getAnnotationFolder()}/${this.bookFolderName(bookFile)}`);
   }
   /** Ensure the annotation folder exists */
   async ensureFolder(path) {
@@ -2552,7 +2553,7 @@ var AnnotationManager = class {
   /** Save reading position to a markdown file */
   async savePosition(bookFile, pos) {
     const folderPath = this.bookFolderPath(bookFile);
-    await this.ensureFolder((0, import_obsidian.normalizePath)(ANNOTATION_FOLDER));
+    await this.ensureFolder((0, import_obsidian.normalizePath)(this.getAnnotationFolder()));
     await this.ensureFolder(folderPath);
     const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${POSITION_FILENAME}`);
     const content = [
@@ -2627,7 +2628,7 @@ var AnnotationManager = class {
   async createAnnotation(params) {
     const created = (/* @__PURE__ */ new Date()).toISOString();
     const folderPath = this.bookFolderPath(params.bookFile);
-    await this.ensureFolder((0, import_obsidian.normalizePath)(ANNOTATION_FOLDER));
+    await this.ensureFolder((0, import_obsidian.normalizePath)(this.getAnnotationFolder()));
     await this.ensureFolder(folderPath);
     const fileName = this.annotationFileName({ ...params, created });
     const filePath = (0, import_obsidian.normalizePath)(`${folderPath}/${fileName}`);
@@ -2775,7 +2776,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
-    this.annotationMgr = new AnnotationManager(this.app);
+    this.annotationMgr = new AnnotationManager(this.app, () => plugin.settings.annotationFolder);
   }
   getViewType() {
     return EPUB_VIEW_TYPE;
@@ -3731,6 +3732,7 @@ var DEFAULT_SETTINGS = {
   autoTheme: true,
   thoriumServerUrl: "",
   useThoriumServer: false,
+  annotationFolder: "epub-annotations",
   readingPositions: {}
 };
 var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
@@ -3849,6 +3851,13 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("Manual theme").setDesc("Used when automatic theme is off").addDropdown(
       (dd) => dd.addOptions({ light: "Light", sepia: "Sepia", dark: "Dark" }).setValue(this.plugin.settings.theme).onChange(async (value) => {
         this.plugin.settings.theme = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("Annotations").setHeading();
+    new import_obsidian3.Setting(containerEl).setName("Annotation folder").setDesc("Vault folder where highlights and reading positions are stored").addText(
+      (text) => text.setPlaceholder("epub-annotations").setValue(this.plugin.settings.annotationFolder).onChange(async (value) => {
+        this.plugin.settings.annotationFolder = value.trim() || "epub-annotations";
         await this.plugin.saveSettings();
       })
     );

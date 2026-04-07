@@ -26,7 +26,7 @@ export class EpubView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: ThoriumReaderPlugin) {
     super(leaf);
     this.plugin = plugin;
-    this.annotationMgr = new AnnotationManager(this.app);
+    this.annotationMgr = new AnnotationManager(this.app, () => plugin.settings.annotationFolder);
   }
 
   getViewType(): string {

@@ -1,12 +1,6 @@
 import { Plugin, TFile, WorkspaceLeaf, Notice, PluginSettingTab, App, Setting } from "obsidian";
 import { EpubView, EPUB_VIEW_TYPE } from "./epub-view";
 
-interface ReadingPosition {
-  chapter: number;
-  scrollFraction: number;
-  anchorText?: string;  // first visible paragraph text for robust restore
-}
-
 interface ThoriumReaderSettings {
   fontSize: number;
   fontFamily: string;
@@ -14,7 +8,7 @@ interface ThoriumReaderSettings {
   autoTheme: boolean;
   thoriumServerUrl: string;
   useThoriumServer: boolean;
-  readingPositions: Record<string, ReadingPosition>;
+  annotationFolder: string;
 }
 
 const DEFAULT_SETTINGS: ThoriumReaderSettings = {
@@ -24,7 +18,7 @@ const DEFAULT_SETTINGS: ThoriumReaderSettings = {
   autoTheme: true,
   thoriumServerUrl: "",
   useThoriumServer: false,
-  readingPositions: {},
+  annotationFolder: "epub-annotations",
 };
 
 export default class ThoriumReaderPlugin extends Plugin {
@@ -44,17 +38,6 @@ export default class ThoriumReaderPlugin extends Plugin {
 
     this.addRibbonIcon("book-open", "Open EPUB", () => this.openEpubFilePicker());
     this.addSettingTab(new ThoriumSettingTab(this.app, this));
-  }
-
-  // ─── Reading Position ─────────────────────────────────────────
-
-  getReadingPosition(filePath: string): ReadingPosition | null {
-    return this.settings.readingPositions[filePath] || null;
-  }
-
-  async saveReadingPosition(filePath: string, pos: ReadingPosition): Promise<void> {
-    this.settings.readingPositions[filePath] = pos;
-    await this.saveSettings();
   }
 
   // ─── File picker ──────────────────────────────────────────────
@@ -116,10 +99,6 @@ export default class ThoriumReaderPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    // Ensure readingPositions exists even on older saved data
-    if (!this.settings.readingPositions) {
-      this.settings.readingPositions = {};
-    }
   }
 
   async saveSettings(): Promise<void> {
@@ -205,19 +184,19 @@ class ThoriumSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl).setName("Reading positions").setHeading();
+    new Setting(containerEl).setName("Annotations").setHeading();
 
-    const posCount = Object.keys(this.plugin.settings.readingPositions).length;
     new Setting(containerEl)
-      .setName("Saved positions")
-      .setDesc(`Currently tracking ${posCount} book(s)`)
-      .addButton((btn) =>
-        btn.setButtonText("Clear all").onClick(async () => {
-          this.plugin.settings.readingPositions = {};
-          await this.plugin.saveSettings();
-          this.display();
-          new Notice("All reading positions cleared");
-        })
+      .setName("Annotation folder")
+      .setDesc("Vault folder where highlights and reading positions are stored")
+      .addText((text) =>
+        text
+          .setPlaceholder("epub-annotations")
+          .setValue(this.plugin.settings.annotationFolder)
+          .onChange(async (value) => {
+            this.plugin.settings.annotationFolder = value.trim() || "epub-annotations";
+            await this.plugin.saveSettings();
+          })
       );
 
     new Setting(containerEl).setName("Thorium web server (advanced)").setHeading();

@@ -21,14 +21,17 @@ export interface ReadingPosition {
   anchorText?: string;
 }
 
-const ANNOTATION_FOLDER = "epub-annotations";
 const POSITION_FILENAME = "_reading-position.md";
 
 export class AnnotationManager {
   app: App;
+  private getAnnotationFolder: () => string;
 
-  constructor(app: App) {
+  constructor(app: App, annotationFolder: string | (() => string) = "epub-annotations") {
     this.app = app;
+    this.getAnnotationFolder = typeof annotationFolder === "function"
+      ? annotationFolder
+      : () => annotationFolder;
   }
 
   /** Get the folder name for a given book (based on epub filename without extension) */
@@ -38,7 +41,7 @@ export class AnnotationManager {
   }
 
   private bookFolderPath(bookFile: string): string {
-    return normalizePath(`${ANNOTATION_FOLDER}/${this.bookFolderName(bookFile)}`);
+    return normalizePath(`${this.getAnnotationFolder()}/${this.bookFolderName(bookFile)}`);
   }
 
   /** Ensure the annotation folder exists */
@@ -58,7 +61,7 @@ export class AnnotationManager {
   /** Save reading position to a markdown file */
   async savePosition(bookFile: string, pos: ReadingPosition): Promise<void> {
     const folderPath = this.bookFolderPath(bookFile);
-    await this.ensureFolder(normalizePath(ANNOTATION_FOLDER));
+    await this.ensureFolder(normalizePath(this.getAnnotationFolder()));
     await this.ensureFolder(folderPath);
 
     const filePath = normalizePath(`${folderPath}/${POSITION_FILENAME}`);
@@ -152,7 +155,7 @@ export class AnnotationManager {
   }): Promise<Annotation> {
     const created = new Date().toISOString();
     const folderPath = this.bookFolderPath(params.bookFile);
-    await this.ensureFolder(normalizePath(ANNOTATION_FOLDER));
+    await this.ensureFolder(normalizePath(this.getAnnotationFolder()));
     await this.ensureFolder(folderPath);
 
     const fileName = this.annotationFileName({ ...params, created });
