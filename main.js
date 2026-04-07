@@ -2804,13 +2804,6 @@ var EpubView = class extends import_obsidian2.ItemView {
     fontDown.addEventListener("click", () => this.adjustFontSize(-2));
     const fontUp = toolbar.createEl("button", { text: "A+", cls: "thorium-btn" });
     fontUp.addEventListener("click", () => this.adjustFontSize(2));
-    const bookmarkBtn = toolbar.createEl("button", { text: "\u{1F516}", cls: "thorium-btn" });
-    bookmarkBtn.addEventListener("click", () => {
-      this.suppressSave = false;
-      this.saveReadingPosition().then(() => {
-        new import_obsidian2.Notice("Position saved manually");
-      });
-    });
     const contentWrapper = container.createDiv({ cls: "thorium-content-wrapper" });
     this.tocContainer = contentWrapper.createDiv({ cls: "thorium-toc-panel" });
     this.tocContainer.style.display = "none";
@@ -3645,6 +3638,7 @@ var EpubView = class extends import_obsidian2.ItemView {
     this.currentThemeIdx = (this.currentThemeIdx + 1) % this.themes.length;
     this.plugin.settings.theme = this.themes[this.currentThemeIdx];
     this.plugin.saveSettings();
+    this.captureCurrentPosition();
     this.renderChapter();
   }
   adjustFontSize(delta) {
@@ -3653,6 +3647,7 @@ var EpubView = class extends import_obsidian2.ItemView {
       Math.min(32, this.plugin.settings.fontSize + delta)
     );
     this.plugin.saveSettings();
+    this.captureCurrentPosition();
     this.renderChapter();
   }
   // ─── Lifecycle ────────────────────────────────────────────────

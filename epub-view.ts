@@ -69,14 +69,6 @@ export class EpubView extends ItemView {
     const fontUp = toolbar.createEl("button", { text: "A+", cls: "thorium-btn" });
     fontUp.addEventListener("click", () => this.adjustFontSize(2));
 
-    const bookmarkBtn = toolbar.createEl("button", { text: "🔖", cls: "thorium-btn" });
-    bookmarkBtn.addEventListener("click", () => {
-      this.suppressSave = false;
-      this.saveReadingPosition().then(() => {
-        new Notice("Position saved manually");
-      });
-    });
-
     // Content area
     const contentWrapper = container.createDiv({ cls: "thorium-content-wrapper" });
 
@@ -1002,6 +994,7 @@ export class EpubView extends ItemView {
     this.currentThemeIdx = (this.currentThemeIdx + 1) % this.themes.length;
     this.plugin.settings.theme = this.themes[this.currentThemeIdx];
     this.plugin.saveSettings();
+    this.captureCurrentPosition();
     this.renderChapter();
   }
 
@@ -1011,6 +1004,7 @@ export class EpubView extends ItemView {
       Math.min(32, this.plugin.settings.fontSize + delta)
     );
     this.plugin.saveSettings();
+    this.captureCurrentPosition();
     this.renderChapter();
   }
 
