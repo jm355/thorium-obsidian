@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, Notice, Modal, App, TextAreaComponent } from "obsidian";
+import { ItemView, WorkspaceLeaf, Notice, Modal, App, TextAreaComponent, EventRef } from "obsidian";
 import { ParsedEpub, parseEpub, getChapterContent, TocItem } from "./epub-parser";
 import { AnnotationManager, Annotation } from "./annotations";
 import type ThoriumReaderPlugin from "./main";
@@ -21,6 +21,7 @@ export class EpubView extends ItemView {
   private savePositionTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingRestore: { anchorText?: string; scrollFraction: number } | null = null;
   private suppressSave = false;
+  private themeChangeRef: EventRef | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ThoriumReaderPlugin) {
     super(leaf);
@@ -76,6 +77,13 @@ export class EpubView extends ItemView {
     this.tocContainer.style.display = "none";
 
     this.iframe = contentWrapper.createEl("iframe", { cls: "thorium-reader-frame" });
+
+    this.themeChangeRef = this.app.workspace.on("css-change", () => {
+      if (this.plugin.settings.autoTheme && this.epub) {
+        this.captureCurrentPosition();
+        this.renderChapter();
+      }
+    });
 
     if (this.filePath) {
       await this.loadEpubFile(this.filePath);
@@ -191,14 +199,15 @@ export class EpubView extends ItemView {
     const annotationScript = this.buildAnnotationScript();
 
     // Inject styles
-    const isDark = this.plugin.settings.theme === "dark";
+    const effectiveTheme = this.getEffectiveTheme();
+    const isDark = effectiveTheme === "dark";
     const fontSize = this.plugin.settings.fontSize;
     const fontFamily = this.plugin.settings.fontFamily;
 
     const styleOverride = `
       <style>
         :root {
-          --reader-bg: ${isDark ? "#1e1e1e" : this.plugin.settings.theme === "sepia" ? "#f4ecd8" : "#ffffff"};
+          --reader-bg: ${isDark ? "#1e1e1e" : effectiveTheme === "sepia" ? "#f4ecd8" : "#ffffff"};
           --reader-fg: ${isDark ? "#d4d4d4" : "#1a1a1a"};
         }
         html, body {
@@ -989,7 +998,16 @@ export class EpubView extends ItemView {
   private currentThemeIdx = 0;
   private readonly themes = ["light", "sepia", "dark"];
 
+  private getEffectiveTheme(): string {
+    if (this.plugin.settings.autoTheme) {
+      return this.app.isDarkMode() ? "dark" : "light";
+    }
+    return this.plugin.settings.theme;
+  }
+
   private cycleTheme(): void {
+    // Cycling always switches to manual mode
+    this.plugin.settings.autoTheme = false;
     this.currentThemeIdx = (this.currentThemeIdx + 1) % this.themes.length;
     this.plugin.settings.theme = this.themes[this.currentThemeIdx];
     this.plugin.saveSettings();
@@ -1012,6 +1030,10 @@ export class EpubView extends ItemView {
   async onClose(): Promise<void> {
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
+    }
+    if (this.themeChangeRef) {
+      this.app.workspace.offref(this.themeChangeRef);
+      this.themeChangeRef = null;
     }
     if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
     this.epub = null;

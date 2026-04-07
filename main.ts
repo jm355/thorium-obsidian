@@ -11,6 +11,7 @@ interface ThoriumReaderSettings {
   fontSize: number;
   fontFamily: string;
   theme: string;
+  autoTheme: boolean;
   thoriumServerUrl: string;
   useThoriumServer: boolean;
   readingPositions: Record<string, ReadingPosition>;
@@ -20,6 +21,7 @@ const DEFAULT_SETTINGS: ThoriumReaderSettings = {
   fontSize: 18,
   fontFamily: "Georgia",
   theme: "light",
+  autoTheme: true,
   thoriumServerUrl: "",
   useThoriumServer: false,
   readingPositions: {},
@@ -179,8 +181,20 @@ class ThoriumSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName("Default theme")
-      .setDesc("Reading theme for the EPUB viewer")
+      .setName("Automatic theme")
+      .setDesc("Follow Obsidian's light/dark mode automatically")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.autoTheme)
+          .onChange(async (value) => {
+            this.plugin.settings.autoTheme = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Manual theme")
+      .setDesc("Used when automatic theme is off")
       .addDropdown((dd) =>
         dd
           .addOptions({ light: "Light", sepia: "Sepia", dark: "Dark" })

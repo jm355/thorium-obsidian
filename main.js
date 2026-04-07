@@ -2771,6 +2771,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   savePositionTimer = null;
   pendingRestore = null;
   suppressSave = false;
+  themeChangeRef = null;
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -2808,6 +2809,12 @@ var EpubView = class extends import_obsidian2.ItemView {
     this.tocContainer = contentWrapper.createDiv({ cls: "thorium-toc-panel" });
     this.tocContainer.style.display = "none";
     this.iframe = contentWrapper.createEl("iframe", { cls: "thorium-reader-frame" });
+    this.themeChangeRef = this.app.workspace.on("css-change", () => {
+      if (this.plugin.settings.autoTheme && this.epub) {
+        this.captureCurrentPosition();
+        this.renderChapter();
+      }
+    });
     if (this.filePath) {
       await this.loadEpubFile(this.filePath);
     }
@@ -2900,13 +2907,14 @@ var EpubView = class extends import_obsidian2.ItemView {
       this.currentChapter
     );
     const annotationScript = this.buildAnnotationScript();
-    const isDark = this.plugin.settings.theme === "dark";
+    const effectiveTheme = this.getEffectiveTheme();
+    const isDark = effectiveTheme === "dark";
     const fontSize = this.plugin.settings.fontSize;
     const fontFamily = this.plugin.settings.fontFamily;
     const styleOverride = `
       <style>
         :root {
-          --reader-bg: ${isDark ? "#1e1e1e" : this.plugin.settings.theme === "sepia" ? "#f4ecd8" : "#ffffff"};
+          --reader-bg: ${isDark ? "#1e1e1e" : effectiveTheme === "sepia" ? "#f4ecd8" : "#ffffff"};
           --reader-fg: ${isDark ? "#d4d4d4" : "#1a1a1a"};
         }
         html, body {
@@ -3633,7 +3641,14 @@ var EpubView = class extends import_obsidian2.ItemView {
   }
   currentThemeIdx = 0;
   themes = ["light", "sepia", "dark"];
+  getEffectiveTheme() {
+    if (this.plugin.settings.autoTheme) {
+      return this.app.isDarkMode() ? "dark" : "light";
+    }
+    return this.plugin.settings.theme;
+  }
   cycleTheme() {
+    this.plugin.settings.autoTheme = false;
     this.currentThemeIdx = (this.currentThemeIdx + 1) % this.themes.length;
     this.plugin.settings.theme = this.themes[this.currentThemeIdx];
     this.plugin.saveSettings();
@@ -3653,6 +3668,10 @@ var EpubView = class extends import_obsidian2.ItemView {
   async onClose() {
     if (this.messageHandler) {
       window.removeEventListener("message", this.messageHandler);
+    }
+    if (this.themeChangeRef) {
+      this.app.workspace.offref(this.themeChangeRef);
+      this.themeChangeRef = null;
     }
     if (this.savePositionTimer) clearTimeout(this.savePositionTimer);
     this.epub = null;
@@ -3709,6 +3728,7 @@ var DEFAULT_SETTINGS = {
   fontSize: 18,
   fontFamily: "Georgia",
   theme: "light",
+  autoTheme: true,
   thoriumServerUrl: "",
   useThoriumServer: false,
   readingPositions: {}
@@ -3820,7 +3840,13 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Default theme").setDesc("Reading theme for the EPUB viewer").addDropdown(
+    new import_obsidian3.Setting(containerEl).setName("Automatic theme").setDesc("Follow Obsidian's light/dark mode automatically").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.autoTheme).onChange(async (value) => {
+        this.plugin.settings.autoTheme = value;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("Manual theme").setDesc("Used when automatic theme is off").addDropdown(
       (dd) => dd.addOptions({ light: "Light", sepia: "Sepia", dark: "Dark" }).setValue(this.plugin.settings.theme).onChange(async (value) => {
         this.plugin.settings.theme = value;
         await this.plugin.saveSettings();
