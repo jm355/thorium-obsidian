@@ -2820,6 +2820,8 @@ var EpubView = class extends import_obsidian2.ItemView {
   tocContainer = null;
   chapterTitle = null;
   tocVisible = false;
+  progressFill = null;
+  progressBar = null;
   annotationMgr;
   chapterAnnotations = [];
   savePositionTimer = null;
@@ -2845,6 +2847,8 @@ var EpubView = class extends import_obsidian2.ItemView {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("thorium-epub-container");
+    this.progressBar = container.createDiv({ cls: "thorium-progress-bar" });
+    this.progressFill = this.progressBar.createDiv({ cls: "thorium-progress-fill" });
     const toolbar = container.createDiv({ cls: "thorium-toolbar" });
     const tocBtn = toolbar.createEl("button", { text: "\u2630 TOC", cls: "thorium-btn" });
     tocBtn.addEventListener("click", () => this.toggleToc());
@@ -2901,6 +2905,48 @@ var EpubView = class extends import_obsidian2.ItemView {
     }
   }
   // ─── TOC ──────────────────────────────────────────────────────
+  buildProgressTicks() {
+    if (!this.progressBar || !this.epub) return;
+    this.progressBar.querySelectorAll(".thorium-progress-tick").forEach((el) => el.remove());
+    const collect = (items, depth) => {
+      const out = [];
+      for (const item of items) {
+        const cleanHref = item.href.split("#")[0];
+        const spineIdx = this.epub.spine.findIndex(
+          (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+        );
+        if (spineIdx < 0) continue;
+        const pct = item.href.includes("#") ? this.epub.tocPositions.get(item.href) ?? this.epub.spinePositions[spineIdx] : this.epub.spinePositions[spineIdx];
+        out.push({ pct, depth });
+        out.push(...collect(item.children, depth + 1));
+      }
+      return out;
+    };
+    const ticks = collect(this.epub.toc, 0);
+    for (const { pct, depth } of ticks) {
+      const tick = this.progressBar.createDiv({ cls: "thorium-progress-tick" });
+      tick.style.left = pct + "%";
+      tick.dataset.depth = String(depth);
+    }
+  }
+  updateProgressBar() {
+    if (!this.progressFill || !this.epub) return;
+    let scrollFraction = 0;
+    try {
+      const doc = this.iframe?.contentDocument;
+      if (doc) {
+        const scrollTop = doc.documentElement.scrollTop;
+        const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
+      }
+    } catch {
+    }
+    const spine = this.epub.spinePositions;
+    const currentStart = spine[this.currentChapter] ?? 0;
+    const nextStart = this.currentChapter + 1 < spine.length ? spine[this.currentChapter + 1] : 100;
+    const pct = currentStart + scrollFraction * (nextStart - currentStart);
+    this.progressFill.style.width = pct + "%";
+  }
   buildToc() {
     if (!this.tocContainer || !this.epub) return;
     this.tocContainer.empty();
@@ -2920,6 +2966,7 @@ var EpubView = class extends import_obsidian2.ItemView {
     } else {
       this.renderTocItems(this.epub.toc, this.tocContainer);
     }
+    this.buildProgressTicks();
   }
   renderTocItems(items, parent) {
     for (const item of items) {
@@ -3149,7 +3196,10 @@ var EpubView = class extends import_obsidian2.ItemView {
         try {
           const iframeDoc = this.iframe?.contentDocument;
           if (iframeDoc) {
-            iframeDoc.addEventListener("scroll", () => this.debounceSavePosition());
+            iframeDoc.addEventListener("scroll", () => {
+              this.debounceSavePosition();
+              this.updateProgressBar();
+            });
           }
         } catch {
         }
@@ -3169,6 +3219,7 @@ var EpubView = class extends import_obsidian2.ItemView {
       const tocLabel = this.findTocLabel(spineItem.href);
       this.chapterTitle.textContent = tocLabel || `${this.currentChapter + 1} / ${this.epub.spine.length}`;
     }
+    this.updateProgressBar();
   }
   // ─── Annotation Script (injected into iframe) ────────────────
   buildAnnotationScript() {

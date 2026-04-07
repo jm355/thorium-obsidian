@@ -7,6 +7,45 @@
   overflow: hidden;
 }
 
+/* Progress bar */
+.thorium-progress-bar {
+  position: relative;
+  height: 6px;
+  background: var(--background-modifier-border);
+  flex-shrink: 0;
+  overflow: visible;
+}
+
+.thorium-progress-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 0%;
+  background: var(--interactive-accent);
+  pointer-events: none;
+}
+
+.thorium-progress-tick {
+  position: absolute;
+  width: 1px;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.55);
+  pointer-events: none;
+  height: 40%;
+  top: 60%;
+}
+
+.thorium-progress-tick[data-depth="0"] {
+  height: 100%;
+  top: 0;
+}
+
+.thorium-progress-tick[data-depth="1"] {
+  height: 67%;
+  top: 33%;
+}
+
 /* Toolbar */
 .thorium-toolbar {
   display: flex;

@@ -15,6 +15,8 @@ export class EpubView extends ItemView {
   private tocContainer: HTMLElement | null = null;
   private chapterTitle: HTMLElement | null = null;
   private tocVisible = false;
+  private progressFill: HTMLElement | null = null;
+  private progressBar: HTMLElement | null = null;
 
   private annotationMgr: AnnotationManager;
   private chapterAnnotations: Annotation[] = [];
@@ -46,6 +48,10 @@ export class EpubView extends ItemView {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
     container.addClass("thorium-epub-container");
+
+    // Progress bar
+    this.progressBar = container.createDiv({ cls: "thorium-progress-bar" });
+    this.progressFill = this.progressBar.createDiv({ cls: "thorium-progress-fill" });
 
     // Toolbar
     const toolbar = container.createDiv({ cls: "thorium-toolbar" });
@@ -125,6 +131,56 @@ export class EpubView extends ItemView {
 
   // ─── TOC ──────────────────────────────────────────────────────
 
+  private buildProgressTicks(): void {
+    if (!this.progressBar || !this.epub) return;
+    // Remove old ticks
+    this.progressBar.querySelectorAll(".thorium-progress-tick").forEach((el) => el.remove());
+
+    const collect = (items: TocItem[], depth: number): Array<{ pct: number; depth: number }> => {
+      const out: Array<{ pct: number; depth: number }> = [];
+      for (const item of items) {
+        const cleanHref = item.href.split("#")[0];
+        const spineIdx = this.epub!.spine.findIndex(
+          (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+        );
+        if (spineIdx < 0) continue;
+        const pct = item.href.includes("#")
+          ? (this.epub!.tocPositions.get(item.href) ?? this.epub!.spinePositions[spineIdx])
+          : this.epub!.spinePositions[spineIdx];
+        out.push({ pct, depth });
+        out.push(...collect(item.children, depth + 1));
+      }
+      return out;
+    };
+
+    const ticks = collect(this.epub.toc, 0);
+    for (const { pct, depth } of ticks) {
+      const tick = this.progressBar.createDiv({ cls: "thorium-progress-tick" });
+      tick.style.left = pct + "%";
+      tick.dataset.depth = String(depth);
+    }
+  }
+
+  private updateProgressBar(): void {
+    if (!this.progressFill || !this.epub) return;
+
+    let scrollFraction = 0;
+    try {
+      const doc = this.iframe?.contentDocument;
+      if (doc) {
+        const scrollTop = doc.documentElement.scrollTop;
+        const maxScroll = doc.documentElement.scrollHeight - doc.documentElement.clientHeight;
+        scrollFraction = maxScroll > 0 ? scrollTop / maxScroll : 0;
+      }
+    } catch { /* ignore */ }
+
+    const spine = this.epub.spinePositions;
+    const currentStart = spine[this.currentChapter] ?? 0;
+    const nextStart = (this.currentChapter + 1 < spine.length) ? spine[this.currentChapter + 1] : 100;
+    const pct = currentStart + scrollFraction * (nextStart - currentStart);
+    this.progressFill.style.width = pct + "%";
+  }
+
   private buildToc(): void {
     if (!this.tocContainer || !this.epub) return;
     this.tocContainer.empty();
@@ -146,6 +202,8 @@ export class EpubView extends ItemView {
     } else {
       this.renderTocItems(this.epub.toc, this.tocContainer);
     }
+
+    this.buildProgressTicks();
   }
 
   private renderTocItems(items: TocItem[], parent: HTMLElement): void {
@@ -401,7 +459,10 @@ export class EpubView extends ItemView {
         try {
           const iframeDoc = this.iframe?.contentDocument;
           if (iframeDoc) {
-            iframeDoc.addEventListener("scroll", () => this.debounceSavePosition());
+            iframeDoc.addEventListener("scroll", () => {
+            this.debounceSavePosition();
+            this.updateProgressBar();
+          });
           }
         } catch { /* ignore */ }
       };
@@ -427,6 +488,8 @@ export class EpubView extends ItemView {
       this.chapterTitle.textContent = tocLabel ||
         `${this.currentChapter + 1} / ${this.epub.spine.length}`;
     }
+
+    this.updateProgressBar();
   }
 
   // ─── Annotation Script (injected into iframe) ────────────────

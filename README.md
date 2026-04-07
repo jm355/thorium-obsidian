@@ -39,6 +39,5 @@ Copy `main.js`, `manifest.json`, and `styles.css` into your vault's `.obsidian/p
 If you run a self-hosted [Thorium Web](https://github.com/edrlab/thorium-web) instance with the Go Toolkit backend, you can point the plugin at it in Settings for the full Thorium Web experience (Web Publication Manifest support, advanced navigation, accessibility features).
 
 ## Future Improvements
-- Reading position indicator
 - Search the book
 - open book to position with link (and add links to note/highlight files, so you can jump to the bookmark)
