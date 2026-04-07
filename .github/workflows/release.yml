@@ -21,7 +21,7 @@ jobs:
       - name: Build plugin
         run: |
           npm install
-          npm run build
+          npx esbuild main.ts --bundle --external:obsidian --external:electron --format=cjs --outfile=main.js
 
       - name: Create release
         env:

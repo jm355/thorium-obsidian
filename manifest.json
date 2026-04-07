@@ -1,7 +1,7 @@
 {
   "id": "thorium-epub-reader",
   "name": "Thorium EPUB Reader",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.0.0",
   "description": "Read EPUB ebooks directly in Obsidian, powered by Thorium Web reader technology.",
   "author": "Your Name",
