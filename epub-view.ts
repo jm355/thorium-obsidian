@@ -17,6 +17,7 @@ export class EpubView extends ItemView {
   private tocVisible = false;
   private progressFill: HTMLElement | null = null;
   private progressBar: HTMLElement | null = null;
+  private toolbar: HTMLElement | null = null;
 
   private annotationMgr: AnnotationManager;
   private chapterAnnotations: Annotation[] = [];
@@ -54,7 +55,8 @@ export class EpubView extends ItemView {
     this.progressFill = this.progressBar.createDiv({ cls: "thorium-progress-fill" });
 
     // Toolbar
-    const toolbar = container.createDiv({ cls: "thorium-toolbar" });
+    this.toolbar = container.createDiv({ cls: "thorium-toolbar" });
+    const toolbar = this.toolbar;
 
     const tocBtn = toolbar.createEl("button", { text: "☰ TOC", cls: "thorium-btn" });
     tocBtn.addEventListener("click", () => this.toggleToc());
@@ -459,10 +461,21 @@ export class EpubView extends ItemView {
         try {
           const iframeDoc = this.iframe?.contentDocument;
           if (iframeDoc) {
+            let lastScrollTop = iframeDoc.documentElement.scrollTop;
             iframeDoc.addEventListener("scroll", () => {
-            this.debounceSavePosition();
-            this.updateProgressBar();
-          });
+              const scrollTop = iframeDoc.documentElement.scrollTop;
+              const scrollingDown = scrollTop > lastScrollTop;
+              lastScrollTop = scrollTop;
+
+              this.debounceSavePosition();
+              this.updateProgressBar();
+
+              if (scrollTop < 50 || !scrollingDown) {
+                this.toolbar?.removeClass("thorium-toolbar-hidden");
+              } else {
+                this.toolbar?.addClass("thorium-toolbar-hidden");
+              }
+            });
           }
         } catch { /* ignore */ }
       };
@@ -489,6 +502,7 @@ export class EpubView extends ItemView {
         `${this.currentChapter + 1} / ${this.epub.spine.length}`;
     }
 
+    this.toolbar?.removeClass("thorium-toolbar-hidden");
     this.updateProgressBar();
   }
 

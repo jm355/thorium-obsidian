@@ -2822,6 +2822,7 @@ var EpubView = class extends import_obsidian2.ItemView {
   tocVisible = false;
   progressFill = null;
   progressBar = null;
+  toolbar = null;
   annotationMgr;
   chapterAnnotations = [];
   savePositionTimer = null;
@@ -2849,7 +2850,8 @@ var EpubView = class extends import_obsidian2.ItemView {
     container.addClass("thorium-epub-container");
     this.progressBar = container.createDiv({ cls: "thorium-progress-bar" });
     this.progressFill = this.progressBar.createDiv({ cls: "thorium-progress-fill" });
-    const toolbar = container.createDiv({ cls: "thorium-toolbar" });
+    this.toolbar = container.createDiv({ cls: "thorium-toolbar" });
+    const toolbar = this.toolbar;
     const tocBtn = toolbar.createEl("button", { text: "\u2630 TOC", cls: "thorium-btn" });
     tocBtn.addEventListener("click", () => this.toggleToc());
     const prevBtn = toolbar.createEl("button", { text: "\u2190 Prev", cls: "thorium-btn" });
@@ -3196,9 +3198,18 @@ var EpubView = class extends import_obsidian2.ItemView {
         try {
           const iframeDoc = this.iframe?.contentDocument;
           if (iframeDoc) {
+            let lastScrollTop = iframeDoc.documentElement.scrollTop;
             iframeDoc.addEventListener("scroll", () => {
+              const scrollTop = iframeDoc.documentElement.scrollTop;
+              const scrollingDown = scrollTop > lastScrollTop;
+              lastScrollTop = scrollTop;
               this.debounceSavePosition();
               this.updateProgressBar();
+              if (scrollTop < 50 || !scrollingDown) {
+                this.toolbar?.removeClass("thorium-toolbar-hidden");
+              } else {
+                this.toolbar?.addClass("thorium-toolbar-hidden");
+              }
             });
           }
         } catch {
@@ -3219,6 +3230,7 @@ var EpubView = class extends import_obsidian2.ItemView {
       const tocLabel = this.findTocLabel(spineItem.href);
       this.chapterTitle.textContent = tocLabel || `${this.currentChapter + 1} / ${this.epub.spine.length}`;
     }
+    this.toolbar?.removeClass("thorium-toolbar-hidden");
     this.updateProgressBar();
   }
   // ─── Annotation Script (injected into iframe) ────────────────
