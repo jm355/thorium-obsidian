@@ -2451,7 +2451,20 @@ async function parseEpub(data) {
     }
   });
   const toc = await parseToc(zip, opfDoc, basePath, manifestItems);
-  return { metadata, spine, toc, zip, basePath };
+  const spineSizes = spine.map((item) => {
+    const file = zip.file(basePath + item.href);
+    const data2 = file?._data;
+    return data2?.uncompressedSize || 0;
+  });
+  const totalSize = spineSizes.reduce((a, b) => a + b, 0) || 1;
+  let cumulative = 0;
+  const spinePositions = spineSizes.map((size) => {
+    const pos = Math.round(cumulative / totalSize * 100);
+    cumulative += size;
+    return pos;
+  });
+  const tocPositions = await computeTocPositions(toc, spine, spinePositions, zip, basePath);
+  return { metadata, spine, spinePositions, tocPositions, toc, zip, basePath };
 }
 async function parseToc(zip, opfDoc, basePath, manifestItems) {
   const navItem = Array.from(manifestItems.entries()).find(
@@ -2519,6 +2532,46 @@ async function getChapterContent(epub, href) {
   const file = epub.zip.file(fullPath);
   if (!file) return `<p>Chapter not found: ${fullPath}</p>`;
   return await file.async("text");
+}
+function collectFragmentHrefs(items) {
+  const hrefs = [];
+  for (const item of items) {
+    if (item.href.includes("#")) hrefs.push(item.href);
+    if (item.children.length > 0) hrefs.push(...collectFragmentHrefs(item.children));
+  }
+  return hrefs;
+}
+async function computeTocPositions(toc, spine, spinePositions, zip, basePath) {
+  const result = /* @__PURE__ */ new Map();
+  const fragmentHrefs = collectFragmentHrefs(toc);
+  if (fragmentHrefs.length === 0) return result;
+  const byChapter = /* @__PURE__ */ new Map();
+  for (const href of fragmentHrefs) {
+    const [chapterHref, fragment] = href.split("#");
+    if (!byChapter.has(chapterHref)) byChapter.set(chapterHref, []);
+    byChapter.get(chapterHref).push(fragment);
+  }
+  for (const [chapterHref, fragments] of byChapter) {
+    const spineIdx = spine.findIndex(
+      (s) => s.href === chapterHref || s.href.endsWith(chapterHref)
+    );
+    if (spineIdx < 0) continue;
+    const file = zip.file(basePath + chapterHref);
+    if (!file) continue;
+    const content = await file.async("text");
+    const contentLen = content.length || 1;
+    const chapterStart = spinePositions[spineIdx];
+    const chapterEnd = spineIdx + 1 < spinePositions.length ? spinePositions[spineIdx + 1] : 100;
+    const chapterSpan = chapterEnd - chapterStart;
+    for (const fragment of fragments) {
+      const pattern = new RegExp(`(?:id|name)=["']${fragment}["']`, "i");
+      const match = content.search(pattern);
+      const fraction = match >= 0 ? match / contentLen : 0;
+      const pct = Math.round(chapterStart + chapterSpan * fraction);
+      result.set(`${chapterHref}#${fragment}`, pct);
+    }
+  }
+  return result;
 }
 
 // annotations.ts
@@ -2854,10 +2907,10 @@ var EpubView = class extends import_obsidian2.ItemView {
     this.tocContainer.createEl("h3", { text: "Table of Contents", cls: "thorium-toc-header" });
     if (this.epub.toc.length === 0) {
       this.epub.spine.forEach((item, idx) => {
-        const entry = this.tocContainer.createEl("div", {
-          text: item.href.split("/").pop() || `Chapter ${idx + 1}`,
-          cls: "thorium-toc-entry"
-        });
+        const entry = this.tocContainer.createEl("div", { cls: "thorium-toc-entry" });
+        entry.createSpan({ text: item.href.split("/").pop() || `Chapter ${idx + 1}`, cls: "thorium-toc-label" });
+        const pct = this.epub.spinePositions[idx];
+        entry.createSpan({ text: `${pct}%`, cls: "thorium-toc-pos" });
         entry.addEventListener("click", () => {
           this.currentChapter = idx;
           this.forceChapterSave();
@@ -2870,14 +2923,20 @@ var EpubView = class extends import_obsidian2.ItemView {
   }
   renderTocItems(items, parent) {
     for (const item of items) {
-      const entry = parent.createEl("div", {
-        text: item.label,
-        cls: "thorium-toc-entry"
-      });
+      const entry = parent.createEl("div", { cls: "thorium-toc-entry" });
+      entry.createSpan({ text: item.label, cls: "thorium-toc-label" });
+      const cleanHref = item.href.split("#")[0];
+      const spineIdx = this.epub.spine.findIndex(
+        (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+      );
+      if (spineIdx >= 0) {
+        const pct = item.href.includes("#") ? this.epub.tocPositions.get(item.href) ?? this.epub.spinePositions[spineIdx] : this.epub.spinePositions[spineIdx];
+        entry.createSpan({ text: `${pct}%`, cls: "thorium-toc-pos" });
+      }
       entry.addEventListener("click", () => {
-        const cleanHref = item.href.split("#")[0];
+        const cleanHref2 = item.href.split("#")[0];
         const idx = this.epub.spine.findIndex(
-          (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+          (s) => s.href === cleanHref2 || s.href.endsWith(cleanHref2)
         );
         if (idx >= 0) {
           this.currentChapter = idx;
@@ -3732,8 +3791,7 @@ var DEFAULT_SETTINGS = {
   autoTheme: true,
   thoriumServerUrl: "",
   useThoriumServer: false,
-  annotationFolder: "epub-annotations",
-  readingPositions: {}
+  annotationFolder: "epub-annotations"
 };
 var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
   settings = DEFAULT_SETTINGS;
@@ -3748,14 +3806,6 @@ var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
     });
     this.addRibbonIcon("book-open", "Open EPUB", () => this.openEpubFilePicker());
     this.addSettingTab(new ThoriumSettingTab(this.app, this));
-  }
-  // ─── Reading Position ─────────────────────────────────────────
-  getReadingPosition(filePath) {
-    return this.settings.readingPositions[filePath] || null;
-  }
-  async saveReadingPosition(filePath, pos) {
-    this.settings.readingPositions[filePath] = pos;
-    await this.saveSettings();
   }
   // ─── File picker ──────────────────────────────────────────────
   async openEpubFilePicker() {
@@ -3802,9 +3852,6 @@ var ThoriumReaderPlugin = class extends import_obsidian3.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    if (!this.settings.readingPositions) {
-      this.settings.readingPositions = {};
-    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -3859,16 +3906,6 @@ var ThoriumSettingTab = class extends import_obsidian3.PluginSettingTab {
       (text) => text.setPlaceholder("epub-annotations").setValue(this.plugin.settings.annotationFolder).onChange(async (value) => {
         this.plugin.settings.annotationFolder = value.trim() || "epub-annotations";
         await this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Reading positions").setHeading();
-    const posCount = Object.keys(this.plugin.settings.readingPositions).length;
-    new import_obsidian3.Setting(containerEl).setName("Saved positions").setDesc(`Currently tracking ${posCount} book(s)`).addButton(
-      (btn) => btn.setButtonText("Clear all").onClick(async () => {
-        this.plugin.settings.readingPositions = {};
-        await this.plugin.saveSettings();
-        this.display();
-        new import_obsidian3.Notice("All reading positions cleared");
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Thorium web server (advanced)").setHeading();

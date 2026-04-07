@@ -23,6 +23,10 @@ export interface TocItem {
 export interface ParsedEpub {
   metadata: EpubMetadata;
   spine: SpineItem[];
+  /** Cumulative position (0–100) at the start of each spine item, by file-size weight */
+  spinePositions: number[];
+  /** Position (0–100) for TOC hrefs that include a fragment, keyed by full href */
+  tocPositions: Map<string, number>;
   toc: TocItem[];
   zip: JSZip;
   basePath: string;
@@ -91,7 +95,25 @@ export async function parseEpub(data: ArrayBuffer): Promise<ParsedEpub> {
   // 3. Parse TOC (try EPUB3 nav, fallback to NCX)
   const toc = await parseToc(zip, opfDoc, basePath, manifestItems);
 
-  return { metadata, spine, toc, zip, basePath };
+  // 4. Compute file-size-weighted spine positions (0–100 scale)
+  const spineSizes = spine.map((item) => {
+    const file = zip.file(basePath + item.href);
+    // Access JSZip's internal metadata for uncompressed size without decompressing
+    const data = (file as any)?._data;
+    return (data?.uncompressedSize as number) || 0;
+  });
+  const totalSize = spineSizes.reduce((a, b) => a + b, 0) || 1;
+  let cumulative = 0;
+  const spinePositions = spineSizes.map((size) => {
+    const pos = Math.round((cumulative / totalSize) * 100);
+    cumulative += size;
+    return pos;
+  });
+
+  // 5. Compute fragment-level positions for TOC subsections
+  const tocPositions = await computeTocPositions(toc, spine, spinePositions, zip, basePath);
+
+  return { metadata, spine, spinePositions, tocPositions, toc, zip, basePath };
 }
 
 async function parseToc(
@@ -205,6 +227,71 @@ export async function getResourceAsDataUrl(
   };
   const mime = mimeMap[ext] || "application/octet-stream";
   return `data:${mime};base64,${data}`;
+}
+
+/** Collect all hrefs that contain a fragment from the TOC tree */
+function collectFragmentHrefs(items: TocItem[]): string[] {
+  const hrefs: string[] = [];
+  for (const item of items) {
+    if (item.href.includes("#")) hrefs.push(item.href);
+    if (item.children.length > 0) hrefs.push(...collectFragmentHrefs(item.children));
+  }
+  return hrefs;
+}
+
+/**
+ * For TOC items with fragment hrefs (e.g. chapter3.html#section2), read the
+ * chapter HTML and measure how far into the file the fragment ID appears.
+ * Interpolates between the chapter's spine position and the next chapter's
+ * spine position to produce a 0–100 book position.
+ */
+async function computeTocPositions(
+  toc: TocItem[],
+  spine: SpineItem[],
+  spinePositions: number[],
+  zip: JSZip,
+  basePath: string
+): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+
+  const fragmentHrefs = collectFragmentHrefs(toc);
+  if (fragmentHrefs.length === 0) return result;
+
+  // Group fragments by chapter file so we read each file at most once
+  const byChapter = new Map<string, string[]>(); // chapterHref → [fragmentId, ...]
+  for (const href of fragmentHrefs) {
+    const [chapterHref, fragment] = href.split("#");
+    if (!byChapter.has(chapterHref)) byChapter.set(chapterHref, []);
+    byChapter.get(chapterHref)!.push(fragment);
+  }
+
+  for (const [chapterHref, fragments] of byChapter) {
+    const spineIdx = spine.findIndex(
+      (s) => s.href === chapterHref || s.href.endsWith(chapterHref)
+    );
+    if (spineIdx < 0) continue;
+
+    const file = zip.file(basePath + chapterHref);
+    if (!file) continue;
+
+    const content = await file.async("text");
+    const contentLen = content.length || 1;
+
+    const chapterStart = spinePositions[spineIdx];
+    const chapterEnd = spineIdx + 1 < spinePositions.length ? spinePositions[spineIdx + 1] : 100;
+    const chapterSpan = chapterEnd - chapterStart;
+
+    for (const fragment of fragments) {
+      // Match id="fragment" or name="fragment" (case-insensitive)
+      const pattern = new RegExp(`(?:id|name)=["']${fragment}["']`, "i");
+      const match = content.search(pattern);
+      const fraction = match >= 0 ? match / contentLen : 0;
+      const pct = Math.round(chapterStart + chapterSpan * fraction);
+      result.set(`${chapterHref}#${fragment}`, pct);
+    }
+  }
+
+  return result;
 }
 
 function resolvePath(base: string, relative: string): string {

@@ -65,12 +65,30 @@
 }
 
 .thorium-toc-entry {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
   padding: 4px 8px;
   cursor: pointer;
   border-radius: 4px;
   font-size: 13px;
   color: var(--text-normal);
   line-height: 1.4;
+}
+
+.thorium-toc-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thorium-toc-pos {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .thorium-toc-entry:hover {

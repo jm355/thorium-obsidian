@@ -133,10 +133,10 @@ export class EpubView extends ItemView {
 
     if (this.epub.toc.length === 0) {
       this.epub.spine.forEach((item, idx) => {
-        const entry = this.tocContainer!.createEl("div", {
-          text: item.href.split("/").pop() || `Chapter ${idx + 1}`,
-          cls: "thorium-toc-entry",
-        });
+        const entry = this.tocContainer!.createEl("div", { cls: "thorium-toc-entry" });
+        entry.createSpan({ text: item.href.split("/").pop() || `Chapter ${idx + 1}`, cls: "thorium-toc-label" });
+        const pct = this.epub!.spinePositions[idx];
+        entry.createSpan({ text: `${pct}%`, cls: "thorium-toc-pos" });
         entry.addEventListener("click", () => {
           this.currentChapter = idx;
           this.forceChapterSave();
@@ -150,10 +150,20 @@ export class EpubView extends ItemView {
 
   private renderTocItems(items: TocItem[], parent: HTMLElement): void {
     for (const item of items) {
-      const entry = parent.createEl("div", {
-        text: item.label,
-        cls: "thorium-toc-entry",
-      });
+      const entry = parent.createEl("div", { cls: "thorium-toc-entry" });
+      entry.createSpan({ text: item.label, cls: "thorium-toc-label" });
+
+      const cleanHref = item.href.split("#")[0];
+      const spineIdx = this.epub!.spine.findIndex(
+        (s) => s.href === cleanHref || s.href.endsWith(cleanHref)
+      );
+      if (spineIdx >= 0) {
+        const pct = item.href.includes("#")
+          ? (this.epub!.tocPositions.get(item.href) ?? this.epub!.spinePositions[spineIdx])
+          : this.epub!.spinePositions[spineIdx];
+        entry.createSpan({ text: `${pct}%`, cls: "thorium-toc-pos" });
+      }
+
       entry.addEventListener("click", () => {
         const cleanHref = item.href.split("#")[0];
         const idx = this.epub!.spine.findIndex(

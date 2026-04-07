@@ -42,4 +42,3 @@ If you run a self-hosted [Thorium Web](https://github.com/edrlab/thorium-web) in
 - Reading position indicator
 - Search the book
 - open book to position with link (and add links to note/highlight files, so you can jump to the bookmark)
-- display position of items in toc
